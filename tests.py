@@ -1,6 +1,7 @@
 from libirc import (
     parse_message, parse_received, parse_message_tags, parse_message_params,
-    parse_message_source, Source, parse_capabilities_ls, get_sasl_plain_payload
+    parse_message_source, Source, parse_capabilities_ls, get_sasl_plain_payload,
+    Message
 )
 
 
@@ -19,6 +20,14 @@ def test_parse_message():
     assert msg.source == Source('dan!d@localhost', 'dan', 'd', 'localhost')
     assert msg.command == 'PRIVMSG'
     assert msg.params == ['Foo', 'bar']
+
+
+def test_message_to_bytes():
+    msg = Message(command='PING')
+    assert msg.to_bytes() == b'PING'
+
+    msg = Message(command='PRIVMSG', params=['#chan', 'Hello there'])
+    assert msg.to_bytes() == b'PRIVMSG #chan :Hello there'
 
 
 def test_parse_message_tags():

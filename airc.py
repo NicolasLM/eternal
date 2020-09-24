@@ -52,8 +52,11 @@ class IRCClientProtocol(asyncio.Protocol):
 
     def data_received(self, data):
         for msg in self.irc.add_received_data(data):
-            self.inbox.put_nowait(msg)
-            self.hub.publish(msg)
+            if isinstance(msg, libirc.ClientMessage):
+                self.send_message_to_server(msg)
+            else:
+                self.inbox.put_nowait(msg)
+                self.hub.publish(msg)
 
     def connection_lost(self, exc):
         logger.info('The server closed the connection')
@@ -63,6 +66,12 @@ class IRCClientProtocol(asyncio.Protocol):
 
     def send_to_server(self, line: str):
         payload = line.encode() + b'\r\n'
+        with open('/tmp/received.log', mode='ab') as f:
+            f.write(payload)
+        self._transport.write(payload)
+
+    def send_message_to_server(self, msg: libirc.ClientMessage):
+        payload = msg.to_bytes() + b'\r\n'
         with open('/tmp/received.log', mode='ab') as f:
             f.write(payload)
         self._transport.write(payload)

@@ -32,10 +32,10 @@ def get_utc_now() -> datetime:
 @dataclass
 class Source:
     """Represent the source of an event."""
-    source: str
-    nick: str
-    user: str
-    host: str
+    source: str = ''
+    nick: str = ''
+    user: str = ''
+    host: str = ''
 
     def __str__(self):
         return self.nick or self.host or self.source
@@ -50,6 +50,23 @@ class Message:
     params: List[str] = field(default_factory=list)
 
     time: datetime = field(default_factory=get_utc_now)
+
+    def to_bytes(self) -> bytes:
+        # TODO: This is very incomplete
+        rv = self.command
+        params = self.params.copy()
+        try:
+            params[-1] = ':' + params[-1]
+        except IndexError:
+            pass
+        else:
+            rv += f" {' '.join(params)}"
+        return rv.encode()
+
+
+@dataclass
+class ClientMessage(Message):
+    """Represent an IRC from this client to the server."""
 
 
 @dataclass
@@ -147,13 +164,7 @@ class IRCClient:
             return None
 
         if msg.command == 'PING':
-            try:
-                cookie = msg.params[0]
-            except IndexError:
-                self.send_to_server('PONG')
-            else:
-                self.send_to_server(f'PONG :{cookie}')
-            return None
+            return ClientMessage(command='PONG', params=msg.params)
 
         if msg.command == 'JOIN':
             return ChannelJoinedEvent(channel=msg.params[0], **msg.__dict__)
