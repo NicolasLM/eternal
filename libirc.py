@@ -1,8 +1,9 @@
 import base64
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import logging
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Optional
 
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,103 @@ class ChannelNamesEvent(Message):
 @dataclass
 class ConnectionClosedEvent:
     """Channel topic."""
+
+
+class IRCClient:
+
+    def __init__(self, config: dict):
+        self._config = config
+
+        self.capabilities: Dict[str, Union[bool, str]] = {}
+        self.nick = self._config['nick']
+
+        self._recv_buffer = bytearray()
+        self._tmp_channel_nicks: Dict[str, List[str]] = defaultdict(list)
+        self._tmp_batches: Dict[str, List[Message]] = dict()
+
+    def add_received_data(self, data: bytes):
+        self._recv_buffer.extend(data)
+        for msg in parse_received(self._recv_buffer):
+            event = self._process_message(msg)
+            if event is not None:
+                yield event
+
+    def _process_message(self, msg: Message) -> Optional[Message]:
+        # Batches allow to put messages on hold and deliver them all at
+        # once, a bit like a database transaction.
+        # Note that this implementation probably doesn't handle nested
+        # batches well.
+        if msg.command == 'BATCH':
+            if msg.params[0].startswith('+'):
+                # Beginning of a new batch
+                self._tmp_batches[msg.params[0][1:]] = list()
+            elif msg.params[0].startswith('-'):
+                # End of a batch
+                for batch_msg in self._tmp_batches.pop(msg.params[0][1:], []):
+                    self._process_message(batch_msg)
+            return None
+
+        # Add the current message to an in progress batch if the
+        # message carries a batch tag and the batch exists.
+        try:
+            self._tmp_batches[msg.tags['batch']].append(msg)
+        except KeyError:
+            pass
+        else:
+            return None
+
+        if msg.command == 'PING':
+            try:
+                cookie = msg.params[0]
+            except IndexError:
+                self.send_to_server('PONG')
+            else:
+                self.send_to_server(f'PONG :{cookie}')
+            return None
+
+        if msg.command == 'JOIN':
+            return ChannelJoinedEvent(channel=msg.params[0], **msg.__dict__)
+
+        if msg.command == 'PART':
+            return ChannelPartEvent(channel=msg.params[0], **msg.__dict__)
+
+        if msg.command == 'QUIT':
+            return QuitEvent(reason=msg.params[0], **msg.__dict__)
+
+        if msg.command == 'NICK':
+            if msg.source.nick == self.nick:
+                self.nick = msg.params[0]
+            return NickChangedEvent(old_nick=str(msg.source), new_nick=msg.params[0], **msg.__dict__)
+
+        if msg.command in ('PRIVMSG', 'NOTICE'):
+            destination = msg.params[0]
+            if destination == self._config['nick']:
+                destination = msg.source.nick or msg.source.host
+            return NewMessageEvent(channel=destination, message=msg.params[1], **msg.__dict__)
+
+        if msg.command == '332':
+            return ChannelTopicEvent(channel=msg.params[1], topic=msg.params[2], **msg.__dict__)
+
+        if msg.command == '353':
+            channel = msg.params[2]
+            nicks = msg.params[3].split(' ')
+            self._tmp_channel_nicks[channel].extend(nicks)
+            return None
+
+        if msg.command == '366':
+            channel = msg.params[1]
+            return ChannelNamesEvent(
+                channel=channel,
+                nicks=self._tmp_channel_nicks.pop(channel),
+                **msg.__dict__
+            )
+
+        if msg.command == 'CAP':
+            if msg.params[1] == 'LS':
+                self.capabilities.update(parse_capabilities_ls(msg.params))
+            # TODO: Handle add and remove capability
+
+        return msg
 
 
 def parse_message(data: bytearray) -> Message:
