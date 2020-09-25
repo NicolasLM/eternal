@@ -27,6 +27,7 @@ palette = [
     ('Light cyan', 'light cyan', 'default'),
     ('White', 'white', 'default')
 ]
+protocols = []
 
 
 def get_local_time(aware_utc_datetime: datetime) -> str:
@@ -84,11 +85,6 @@ class Channels:
             pile_widgets.append((widget, ('pack', None)))
 
         self.pile.contents = pile_widgets
-
-    def set_members(self, channel_name: str, members: List[str]):
-        _, channel = self._get_channel_by_name(channel_name)
-        channel.members = set(members)
-        self._render_members()
 
     def process_changed_nick(self, old: str, new: Optional[str], line: urwid.Text):
         for channel in self._channels:
@@ -197,7 +193,8 @@ class Channels:
     def get_current_channel(self) -> Channel:
         return self._channels[self._current]
 
-    async def consume_messages(self, queue):
+    async def consume_messages(self):
+        queue = protocols[0].inbox
         while True:
             msg = await queue.get()
 
@@ -209,14 +206,17 @@ class Channels:
             if isinstance(msg, libirc.ChannelJoinedEvent):
                 _, channel = self._get_channel_by_name(msg.channel)
                 channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(msg.source)), str(msg.source)), f' joined {msg.channel}']))
-                channel.members.add(str(msg.source))
+                channel.members = set(protocols[0].irc.channels[msg.channel].members.keys())
                 self._update_content()
                 self._render_members()
 
             elif isinstance(msg, libirc.ChannelPartEvent):
                 _, channel = self._get_channel_by_name(msg.channel)
                 channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(msg.source)), str(msg.source)), f' left {msg.channel}']))
-                channel.members.remove(str(msg.source))
+                try:
+                    channel.members = set(protocols[0].irc.channels[msg.channel].members.keys())
+                except KeyError:
+                    channels.remove_channel(channel)
                 self._update_content()
                 self._render_members()
 
@@ -242,7 +242,9 @@ class Channels:
                 self._update_content()
 
             elif isinstance(msg, libirc.ChannelNamesEvent):
-                self.set_members(msg.channel, msg.nicks)
+                _, channel = self._get_channel_by_name(msg.channel)
+                channel.members = set(protocols[0].irc.channels[msg.channel].members.keys())
+                self._render_members()
                 self._update_content()
 
             else:
@@ -262,24 +264,29 @@ class CommandEdit(urwid_readline.ReadlineEdit):
         if command == '/close':
             channels.remove_channel(channels.get_current_channel())
         elif command == '/part':
-            self.irc_send(f'PART {channels.get_current_channel().name}')
+            protocols[0].send_to_server(f'PART {channels.get_current_channel().name}')
         elif command.startswith('/msg'):
             _, channel_name, content = command.split(' ', maxsplit=2)
-            time = get_local_time(libirc.get_utc_now())
-            source = 'sigint'
-            _, channel = channels._get_channel_by_name(channel_name)
-            self.irc_send(f'PRIVMSG {channel_name} :{content}')
-            channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(source)), str(source)), f': {content}']))
-            channels._update_content()
+            protocols[0].send_to_server(f'PRIVMSG {channel_name} :{content}')
+
+            if 'echo-message' not in protocols[0].irc.capabilities:
+                _, channel = channels._get_channel_by_name(channel_name)
+                time = get_local_time(libirc.get_utc_now())
+                source = protocols[0].irc.nick
+                channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(source)), str(source)), f': {content}']))
+                channels._update_content()
+
         elif command.startswith('/'):
-            self.irc_send(command[1:])
+            protocols[0].send_to_server(command[1:])
         else:
-            time = get_local_time(libirc.get_utc_now())
-            source = 'sigint'
             channel = channels.get_current_channel()
-            self.irc_send(f'PRIVMSG {channel.name} :{command}')
-            channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(source)), str(source)), f': {command}']))
-            channels._update_content()
+            protocols[0].send_to_server(f'PRIVMSG {channel.name} :{command}')
+
+            if 'echo-message' not in protocols[0].irc.capabilities:
+                time = get_local_time(libirc.get_utc_now())
+                source = protocols[0].irc.nick
+                channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(source)), str(source)), f': {command}']))
+                channels._update_content()
 
         self.set_edit_text('')
 

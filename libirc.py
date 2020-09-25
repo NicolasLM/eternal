@@ -3,7 +3,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import logging
-from typing import List, Dict, Union, Optional
+from typing import List, Dict, Union
 
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,30 @@ class Source:
 
     def __str__(self):
         return self.nick or self.host or self.source
+
+
+@dataclass
+class User:
+    """Represent a user on a network."""
+    source: Source = field(default_factory=Source)
+    modes: str = ''
+    is_away: bool = False
+
+
+@dataclass
+class Member:
+    """Represent a user in a specific channel."""
+    user: User = field(default_factory=User)
+    prefixes: str = ''
+
+
+@dataclass
+class Channel:
+    """Represent a channel on a network."""
+    name: str = ''
+    modes: str = ''
+    topic: str = ''
+    members: Dict[str, Member] = field(default_factory=dict)
 
 
 @dataclass
@@ -122,6 +146,9 @@ class ConnectionClosedEvent:
 
 class IRCClient:
 
+    # TODO: ready that from server
+    member_prefixes = '!~&@%+'
+
     def __init__(self, config: dict):
         self._config = config
 
@@ -131,28 +158,29 @@ class IRCClient:
         self._recv_buffer = bytearray()
         self._tmp_channel_nicks: Dict[str, List[str]] = defaultdict(list)
         self._tmp_batches: Dict[str, List[Message]] = dict()
+        self.channels: Dict[str, Channel] = dict()
 
     def add_received_data(self, data: bytes):
         self._recv_buffer.extend(data)
         for msg in parse_received(self._recv_buffer):
-            event = self._process_message(msg)
-            if event is not None:
-                yield event
+            for processed_msg in self._process_message(msg):
+                yield processed_msg
 
-    def _process_message(self, msg: Message) -> Optional[Message]:
+    def _process_message(self, msg: Message) -> List[Message]:
         # Batches allow to put messages on hold and deliver them all at
         # once, a bit like a database transaction.
         # Note that this implementation probably doesn't handle nested
         # batches well.
         if msg.command == 'BATCH':
+            rv = list()
             if msg.params[0].startswith('+'):
                 # Beginning of a new batch
                 self._tmp_batches[msg.params[0][1:]] = list()
             elif msg.params[0].startswith('-'):
                 # End of a batch
                 for batch_msg in self._tmp_batches.pop(msg.params[0][1:], []):
-                    self._process_message(batch_msg)
-            return None
+                    rv.extend(self._process_message(batch_msg))
+            return rv
 
         # Add the current message to an in progress batch if the
         # message carries a batch tag and the batch exists.
@@ -161,54 +189,109 @@ class IRCClient:
         except KeyError:
             pass
         else:
-            return None
+            return []
 
-        if msg.command == 'PING':
-            return ClientMessage(command='PONG', params=msg.params)
-
-        if msg.command == 'JOIN':
-            return ChannelJoinedEvent(channel=msg.params[0], **msg.__dict__)
-
-        if msg.command == 'PART':
-            return ChannelPartEvent(channel=msg.params[0], **msg.__dict__)
-
-        if msg.command == 'QUIT':
-            return QuitEvent(reason=msg.params[0], **msg.__dict__)
-
-        if msg.command == 'NICK':
-            if msg.source.nick == self.nick:
-                self.nick = msg.params[0]
-            return NickChangedEvent(old_nick=str(msg.source), new_nick=msg.params[0], **msg.__dict__)
+        try:
+            method = getattr(self, f'_process_{msg.command.lower()}_message')
+        except AttributeError:
+            pass
+        else:
+            return method(msg)
 
         if msg.command in ('PRIVMSG', 'NOTICE'):
             destination = msg.params[0]
             if destination == self._config['nick']:
                 destination = msg.source.nick or msg.source.host
-            return NewMessageEvent(channel=destination, message=msg.params[1], **msg.__dict__)
-
-        if msg.command == '332':
-            return ChannelTopicEvent(channel=msg.params[1], topic=msg.params[2], **msg.__dict__)
+            return [NewMessageEvent(channel=destination, message=msg.params[1], **msg.__dict__)]
 
         if msg.command == '353':
             channel = msg.params[2]
             nicks = msg.params[3].split(' ')
             self._tmp_channel_nicks[channel].extend(nicks)
-            return None
+            return []
 
         if msg.command == '366':
             channel = msg.params[1]
-            return ChannelNamesEvent(
+            nicks = self._tmp_channel_nicks.pop(channel)
+
+            def _member_from_nick(nick: str) -> Member:
+                i = 0
+                for i, letter in enumerate(nick):
+                    if letter not in self.member_prefixes:
+                        break
+                prefixes = nick[:i]
+                nick = nick[i:]
+                return Member(User(source=Source(nick=nick)), prefixes=prefixes)
+
+            members = [_member_from_nick(nick) for nick in nicks]
+            self.channels[channel].members = {
+                m.user.source.nick: m
+                for m in members
+            }
+
+            return [ChannelNamesEvent(
                 channel=channel,
-                nicks=self._tmp_channel_nicks.pop(channel),
+                nicks=nicks,
                 **msg.__dict__
-            )
+            )]
 
         if msg.command == 'CAP':
             if msg.params[1] == 'LS':
                 self.capabilities.update(parse_capabilities_ls(msg.params))
             # TODO: Handle add and remove capability
 
-        return msg
+        return [msg]
+
+    def _process_ping_message(self, msg: Message):
+        return [ClientMessage(command='PONG', params=msg.params)]
+
+    def _process_join_message(self, msg: Message):
+        channel_name = msg.params[0]
+        if msg.source.nick == self.nick and channel_name not in self.channels:
+            self.channels[channel_name] = Channel(name=channel_name)
+
+        user = User(msg.source)
+        self.channels[channel_name].members[user.source.nick] = Member(user)
+
+        return [ChannelJoinedEvent(channel=channel_name, **msg.__dict__)]
+
+    def _process_part_message(self, msg: Message):
+        channel_name = msg.params[0]
+        if msg.source.nick == self.nick and channel_name in self.channels:
+            del self.channels[channel_name]
+        else:
+            self.channels[channel_name].members.pop(msg.source.nick)
+
+        return [ChannelPartEvent(channel=channel_name, **msg.__dict__)]
+
+    def _process_quit_message(self, msg: Message):
+        for channel in self.channels.values():
+            channel.members.pop(msg.source.nick, None)
+        return [QuitEvent(reason=msg.params[0], **msg.__dict__)]
+
+    def _process_nick_message(self, msg: Message):
+        old_nick = msg.source.nick
+        new_nick = msg.params[0]
+        if msg.source.nick == self.nick:
+            self.nick = new_nick
+
+        for channel in self.channels.values():
+            if old_nick in channel.members:
+                member = channel.members.pop(old_nick)
+                member.user.source.source.replace(old_nick + '!', new_nick + '!')
+                member.user.source.nick = new_nick
+                channel.members[new_nick] = member
+
+        return [NickChangedEvent(old_nick=old_nick, new_nick=new_nick, **msg.__dict__)]
+
+    def _process_332_message(self, msg: Message):
+        channel_name, topic = msg.params[1], msg.params[2]
+        try:
+            self.channels[channel_name].topic = topic
+        except KeyError:
+            pass
+
+        return [ChannelTopicEvent(channel=channel_name, topic=topic, **msg.__dict__)]
 
 
 def parse_message(data: bytearray) -> Message:
