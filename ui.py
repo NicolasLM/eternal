@@ -1,4 +1,5 @@
 from datetime import datetime
+from itertools import islice
 import hashlib
 from typing import List, Tuple, Optional
 
@@ -58,10 +59,28 @@ def nick_color(nick: str) -> str:
 
 class Channel:
 
-    def __init__(self, name: str, content: List[urwid.Text]):
+    def __init__(self, name: str, ui: 'UI'):
         self.name = name
-        self.list_walker = urwid.SimpleFocusListWalker(content)
-        self.members = set()
+        self.ui = ui
+        self.list_walker = urwid.SimpleFocusListWalker([])
+        self.members_updated = False
+        self._members_pile_widget = list()
+
+    def get_members_pile_widgets(self) -> list:
+        if self.members_updated:
+            self._members_pile_widget = list()
+            try:
+                members = self.ui.protocol.irc.channels[self.name].members.keys()
+            except KeyError:
+                members = []
+
+            self._members_pile_widget = [
+                (urwid.Text((nick_color(nick), nick)), ('pack', None))
+                for nick in islice(members, 64)
+            ]
+            self.members_updated = False
+
+        return self._members_pile_widget
 
 
 class UI:
@@ -73,7 +92,7 @@ class UI:
         self.pile = urwid.Pile([])
         self.members_pile = urwid.Pile([])
 
-        self.add_channel(Channel('server', []))
+        self.add_channel(Channel('server', self))
 
         columns = urwid.Columns([
             (20, urwid.LineBox(urwid.Filler(self.pile, valign='top'))),
@@ -99,25 +118,22 @@ class UI:
 
     def process_changed_nick(self, old: str, new: Optional[str], line: urwid.Text):
         for channel in self._channels:
-            try:
-                channel.members.remove(old)
-            except KeyError:
-                pass
-            else:
-                channel.list_walker.append(line)
-                if new:
-                    channel.members.add(new)
+            channel.members_updated = True
+            # TODO: reimplement detection of whether a nick was in a channel or not
+            # try:
+            #     channel.members.remove(old)
+            # except KeyError:
+            #     pass
+            # else:
+            #     channel.list_walker.append(line)
+            #     if new:
+            #         channel.members.add(new)
 
         self._update_content()
         self._render_members()
 
     def _render_members(self):
-        pile_widgets = list()
-        for member in self.get_current_channel().members:
-            widget = urwid.Text((nick_color(member), member))
-            pile_widgets.append((widget, ('pack', None)))
-
-        self.members_pile.contents = pile_widgets
+        self.members_pile.contents = self.get_current_channel().get_members_pile_widgets()
 
     def add_channel(self, channel: Channel):
         self._channels.append(channel)
@@ -197,7 +213,7 @@ class UI:
                 return i, channel
 
         # Create channel if it doesn't exist
-        channel = Channel(name, [])
+        channel = Channel(name, self)
         self.add_channel(channel)
         return i + 1, channel
 
@@ -217,17 +233,17 @@ class UI:
             if isinstance(msg, libirc.ChannelJoinedEvent):
                 _, channel = self._get_channel_by_name(msg.channel)
                 channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(msg.source)), str(msg.source)), f' joined {msg.channel}']))
-                channel.members = set(self.protocol.irc.channels[msg.channel].members.keys())
+                channel.members_updated = True
                 self._update_content()
                 self._render_members()
 
             elif isinstance(msg, libirc.ChannelPartEvent):
                 _, channel = self._get_channel_by_name(msg.channel)
                 channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(msg.source)), str(msg.source)), f' left {msg.channel}']))
-                try:
-                    channel.members = set(self.protocol.irc.channels[msg.channel].members.keys())
-                except KeyError:
+                if msg.channel not in self.protocol.irc.channels:
                     self.remove_channel(channel)
+                else:
+                    channel.members_updated = True
                 self._update_content()
                 self._render_members()
 
@@ -254,7 +270,7 @@ class UI:
 
             elif isinstance(msg, libirc.ChannelNamesEvent):
                 _, channel = self._get_channel_by_name(msg.channel)
-                channel.members = set(self.protocol.irc.channels[msg.channel].members.keys())
+                channel.members_updated = True
                 self._render_members()
                 self._update_content()
 
@@ -311,7 +327,10 @@ class CommandEdit(urwid_readline.ReadlineEdit):
         self.set_edit_text('')
 
     def _auto_complete(self, text, state):
-        candidates = self.ui.get_current_channel().members
+        try:
+            candidates = self.ui.protocol.irc.channels[self.ui.get_current_channel().name].members.keys()
+        except KeyError:
+            candidates = list()
         tmp = [c + ', ' for c in candidates if c and c.startswith(text)] if text else candidates
         try:
             return tmp[state]
