@@ -5,10 +5,10 @@ import sys
 import urwid
 
 from airc import IRCClientProtocol
-from ui import channels, frame, palette, protocols
+from ui import UI, palette
 
 
-async def init(irc_connection_config: dict):
+async def init(irc_connection_config: dict, ui: UI):
     loop = asyncio.get_running_loop()
 
     transport, protocol = await loop.create_connection(
@@ -17,8 +17,8 @@ async def init(irc_connection_config: dict):
         irc_connection_config['port'],
         ssl=irc_connection_config['ssl']
     )
-    protocols.append(protocol)
-    consume_messages_task = loop.create_task(channels.consume_messages())
+    ui.protocol = protocol
+    consume_messages_task = loop.create_task(ui.consume_messages())
 
 
 def main():
@@ -31,12 +31,14 @@ def main():
     # low-level APIs.
     loop = asyncio.get_event_loop()
 
+    ui = UI()
+
     urwid_main_loop = urwid.MainLoop(
-        frame,
+        ui.frame,
         palette,
         event_loop=urwid.AsyncioEventLoop(loop=loop)
     )
-    loop.create_task(init(irc_connection_config))
+    loop.create_task(init(irc_connection_config, ui))
 
     # Wait until the protocol signals that the connection
     # is lost and close the transport.

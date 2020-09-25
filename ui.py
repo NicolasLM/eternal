@@ -27,7 +27,6 @@ palette = [
     ('Light cyan', 'light cyan', 'default'),
     ('White', 'white', 'default')
 ]
-protocols = []
 
 
 def get_local_time(aware_utc_datetime: datetime) -> str:
@@ -65,14 +64,26 @@ class Channel:
         self.members = set()
 
 
-class Channels:
+class UI:
 
-    def __init__(self, chat_content: urwid.ListBox):
+    def __init__(self):
         self._current = 0
         self._channels: List[Channel] = []
-        self._chat_content = chat_content
+        self.chat_content = urwid.ListBox(urwid.SimpleFocusListWalker([]))
         self.pile = urwid.Pile([])
         self.members_pile = urwid.Pile([])
+
+        self.add_channel(Channel('server', []))
+
+        columns = urwid.Columns([
+            (20, urwid.LineBox(urwid.Filler(self.pile, valign='top'))),
+            self.chat_content,
+            (20, urwid.LineBox(urwid.Filler(self.members_pile, valign='top'))),
+        ])
+        command_input = CommandEdit(self, ('Bold', "Command "))
+        self.frame = MyFrame(self, body=columns, footer=command_input, focus_part='footer')
+
+        self.protocol = None
 
     def _update_pile(self):
         pile_widgets = list()
@@ -126,9 +137,9 @@ class Channels:
 
     def _update_content(self):
         channel_list_walker = self._channels[self._current].list_walker
-        self._chat_content.body = channel_list_walker
+        self.chat_content.body = channel_list_walker
         try:
-            self._chat_content.set_focus(channel_list_walker.positions(True)[0])
+            self.chat_content.set_focus(channel_list_walker.positions(True)[0])
         except IndexError:
             pass
 
@@ -194,7 +205,7 @@ class Channels:
         return self._channels[self._current]
 
     async def consume_messages(self):
-        queue = protocols[0].inbox
+        queue = self.protocol.inbox
         while True:
             msg = await queue.get()
 
@@ -206,7 +217,7 @@ class Channels:
             if isinstance(msg, libirc.ChannelJoinedEvent):
                 _, channel = self._get_channel_by_name(msg.channel)
                 channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(msg.source)), str(msg.source)), f' joined {msg.channel}']))
-                channel.members = set(protocols[0].irc.channels[msg.channel].members.keys())
+                channel.members = set(self.protocol.irc.channels[msg.channel].members.keys())
                 self._update_content()
                 self._render_members()
 
@@ -214,9 +225,9 @@ class Channels:
                 _, channel = self._get_channel_by_name(msg.channel)
                 channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(msg.source)), str(msg.source)), f' left {msg.channel}']))
                 try:
-                    channel.members = set(protocols[0].irc.channels[msg.channel].members.keys())
+                    channel.members = set(self.protocol.irc.channels[msg.channel].members.keys())
                 except KeyError:
-                    channels.remove_channel(channel)
+                    self.remove_channel(channel)
                 self._update_content()
                 self._render_members()
 
@@ -243,7 +254,7 @@ class Channels:
 
             elif isinstance(msg, libirc.ChannelNamesEvent):
                 _, channel = self._get_channel_by_name(msg.channel)
-                channel.members = set(protocols[0].irc.channels[msg.channel].members.keys())
+                channel.members = set(self.protocol.irc.channels[msg.channel].members.keys())
                 self._render_members()
                 self._update_content()
 
@@ -256,87 +267,83 @@ class Channels:
 
 class CommandEdit(urwid_readline.ReadlineEdit):
 
+    def __init__(self, ui: UI, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.ui = ui
+        self.enable_autocomplete(self._auto_complete)
+
     def keypress(self, size, key):
         if key != 'enter':
             return super().keypress(size, key)
 
         command = self.get_edit_text()
-        if command == '/close':
-            channels.remove_channel(channels.get_current_channel())
+        if command == '':
+            # Don't send empty messages
+            return
+
+        elif command == '/close':
+            self.ui.remove_channel(self.ui.get_current_channel())
         elif command == '/part':
-            protocols[0].send_to_server(f'PART {channels.get_current_channel().name}')
+            self.ui.protocol.send_to_server(f'PART {self.ui.get_current_channel().name}')
         elif command.startswith('/msg'):
             _, channel_name, content = command.split(' ', maxsplit=2)
-            protocols[0].send_to_server(f'PRIVMSG {channel_name} :{content}')
+            self.ui.protocol.send_to_server(f'PRIVMSG {channel_name} :{content}')
 
-            if 'echo-message' not in protocols[0].irc.capabilities:
-                _, channel = channels._get_channel_by_name(channel_name)
+            if 'echo-message' not in self.ui.protocol.irc.capabilities:
+                _, channel = self.ui._get_channel_by_name(channel_name)
                 time = get_local_time(libirc.get_utc_now())
-                source = protocols[0].irc.nick
+                source = self.ui.protocol.irc.nick
                 channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(source)), str(source)), f': {content}']))
-                channels._update_content()
+                self.ui._update_content()
 
         elif command.startswith('/'):
-            protocols[0].send_to_server(command[1:])
+            self.ui.protocol.send_to_server(command[1:])
         else:
-            channel = channels.get_current_channel()
-            protocols[0].send_to_server(f'PRIVMSG {channel.name} :{command}')
+            channel = self.ui.get_current_channel()
+            self.ui.protocol.send_to_server(f'PRIVMSG {channel.name} :{command}')
 
-            if 'echo-message' not in protocols[0].irc.capabilities:
+            if 'echo-message' not in self.ui.protocol.irc.capabilities:
                 time = get_local_time(libirc.get_utc_now())
-                source = protocols[0].irc.nick
+                source = self.ui.protocol.irc.nick
                 channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(source)), str(source)), f': {command}']))
-                channels._update_content()
+                self.ui._update_content()
 
         self.set_edit_text('')
+
+    def _auto_complete(self, text, state):
+        candidates = self.ui.get_current_channel().members
+        tmp = [c + ', ' for c in candidates if c and c.startswith(text)] if text else candidates
+        try:
+            return tmp[state]
+        except (IndexError, TypeError):
+            return None
 
 
 class MyFrame(urwid.Frame):
 
+    def __init__(self, ui: UI, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.ui = ui
+
     def keypress(self, size, key):
 
         if key == 'ctrl p':
-            channels.select_previous()
+            self.ui.select_previous()
             return
 
         if key == 'ctrl n':
-            channels.select_next()
+            self.ui.select_next()
             return
 
         if key == 'ctrl o':
-            channels.move_up()
+            self.ui.move_up()
             return
 
         if key == 'ctrl b':
-            channels.move_down()
+            self.ui.move_down()
             return
 
         if key in ('page up', 'page down', 'home', 'end', 'up', 'down'):
             return self.get_body().keypress(size, key)
 
         return super().keypress(size, key)
-
-
-def auto_complete(text, state):
-    candidates = channels.get_current_channel().members
-    tmp = [c + ', ' for c in candidates if c and c.startswith(text)] if text else candidates
-    try:
-        return tmp[state]
-    except (IndexError, TypeError):
-        return None
-
-
-default_list_walker = urwid.SimpleFocusListWalker([])
-chat_content = urwid.ListBox(default_list_walker)
-
-channels = Channels(chat_content)
-channels.add_channel(Channel('server', []))
-
-columns = urwid.Columns([
-    (20, urwid.LineBox(urwid.Filler(channels.pile, valign='top'))),
-    chat_content,
-    (20, urwid.LineBox(urwid.Filler(channels.members_pile, valign='top'))),
-])
-command_input = CommandEdit(('Bold', "Command "))
-command_input.enable_autocomplete(auto_complete)
-frame = MyFrame(body=columns, footer=command_input, focus_part='footer')
