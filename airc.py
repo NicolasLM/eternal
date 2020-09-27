@@ -93,6 +93,9 @@ class IRCClientProtocol(asyncio.Protocol):
             payload = libirc.get_sasl_plain_payload(sasl_config['user'], sasl_config['password'])
             self.send_to_server(f'AUTHENTICATE {payload}')
 
+        if 'message-tags' in self.irc.capabilities:
+            self.send_to_server('CAP REQ :message-tags')
+
         if 'echo-message' in self.irc.capabilities:
             self.send_to_server('CAP REQ :echo-message')
 

@@ -31,8 +31,15 @@ def test_message_to_bytes():
 
 
 def test_parse_message_tags():
-    assert parse_message_tags('id=123AB;rose') == {'id': '123AB', 'rose': True}
+    assert parse_message_tags('id=123AB;rose') == {'id': '123AB', 'rose': ''}
     assert parse_message_tags('url=;netsplit=tur,ty') == {'url': '', 'netsplit': 'tur,ty'}
+
+    # Test escaping
+    assert parse_message_tags(r'a=hello\:there') == {'a': 'hello;there'}
+    assert parse_message_tags(r'a=hello\sthere') == {'a': 'hello there'}
+    assert parse_message_tags(r'a=\r\n') == {'a': '\r\n'}
+    assert parse_message_tags(r'a=/!\\') == {'a': '/!\\'}
+    assert parse_message_tags('a=a\\') == {'a': 'a'}
 
 
 def test_parse_message_params():

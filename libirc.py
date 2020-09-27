@@ -397,14 +397,30 @@ def parse_rfc3339_datetime(datetime_str: str) -> datetime:
     return datetime.strptime(datetime_str, "%Y-%m-%dT%H:%M:%S.%f%z")
 
 
-def parse_message_tags(tags: str) -> dict:
+# Tag values can contain escaped characters:
+# https://ircv3.net/specs/extensions/message-tags#escaping-values
+# Unlike the spec, this approach does not work with extraneous lone '\'.
+TAG_VALUE_ESCAPE = {
+    r'\:': ';',
+    r'\s': ' ',
+    r'\\': '\\',
+    r'\r': '\r',
+    r'\n': '\n'
+}
+
+
+def parse_message_tags(tags: str) -> Dict[str, str]:
     rv = dict()
     for tag in tags.split(';'):
         if '=' in tag:
             key, value = tag.split('=', maxsplit=1)
+            if value.endswith('\\'):
+                value = value[:-1]
+            for escaped, actual in TAG_VALUE_ESCAPE.items():
+                value = value.replace(escaped, actual)
         else:
             key = tag
-            value = True
+            value = ''
         rv[key] = value
     return rv
 
