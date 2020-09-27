@@ -1,9 +1,9 @@
 import base64
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import logging
-from typing import List, Dict, Union, Iterable
+from typing import List, Dict, Union, Iterable, Optional
 
 
 logger = logging.getLogger(__name__)
@@ -47,6 +47,14 @@ class User:
     source: Source = field(default_factory=Source)
     modes: str = ''
     is_away: bool = False
+    last_message_at: Optional[datetime] = None
+
+    @property
+    def is_recently_active(self) -> bool:
+        if self.last_message_at is None:
+            return False
+
+        return (get_utc_now() - self.last_message_at) < timedelta(minutes=15)
 
 
 @dataclass
@@ -97,18 +105,31 @@ class ClientMessage(Message):
 class ChannelJoinedEvent(Message):
     """Someone joined a channel."""
     channel: str = ''
+    user: User = field(default_factory=User)
 
 
 @dataclass
 class ChannelPartEvent(Message):
     """Someone left a channel."""
     channel: str = ''
+    user: User = field(default_factory=User)
 
 
 @dataclass
 class QuitEvent(Message):
     """Someone disconnected from the server."""
+    channel: str = ''
+    user: User = field(default_factory=User)
     reason: str = ''
+
+
+@dataclass
+class NickChangedEvent(Message):
+    """A user changed its nick."""
+    channel: str = ''
+    user: User = field(default_factory=User)
+    old_nick: str = ''
+    new_nick: str = ''
 
 
 @dataclass
@@ -126,13 +147,6 @@ class ChannelTopicEvent(Message):
 
 
 @dataclass
-class NickChangedEvent(Message):
-    """A user changed its nick."""
-    old_nick: str = ''
-    new_nick: str = ''
-
-
-@dataclass
 class ChannelNamesEvent(Message):
     """List of nicks in a channel."""
     channel: str = ''
@@ -142,6 +156,13 @@ class ChannelNamesEvent(Message):
 @dataclass
 class ConnectionClosedEvent:
     """Channel topic."""
+
+
+class UserDefaultDict(defaultdict):
+
+    def __missing__(self, key: str):
+        self[key] = User(source=Source(nick=key))
+        return self[key]
 
 
 class IRCClient:
@@ -159,6 +180,7 @@ class IRCClient:
         self._tmp_channel_nicks: Dict[str, List[str]] = defaultdict(list)
         self._tmp_batches: Dict[str, List[Message]] = dict()
         self.channels: Dict[str, Channel] = dict()
+        self.users: Dict[str, User] = UserDefaultDict()
 
     def add_received_data(self, data: bytes):
         self._recv_buffer.extend(data)
@@ -202,6 +224,9 @@ class IRCClient:
             destination = msg.params[0]
             if destination == self._config['nick']:
                 destination = msg.source.nick or msg.source.host
+
+            self.users[msg.source.nick].last_message_at = get_utc_now()
+
             return [NewMessageEvent(channel=destination, message=msg.params[1], **msg.__dict__)]
 
         if msg.command == '353':
@@ -221,7 +246,9 @@ class IRCClient:
                         break
                 prefixes = nick[:i]
                 nick = nick[i:]
-                return Member(User(source=Source(nick=nick)), prefixes=prefixes)
+                user = self.users[nick]
+
+                return Member(user, prefixes=prefixes)
 
             members = [_member_from_nick(nick) for nick in nicks]
             self.channels[channel].members = {
@@ -250,10 +277,10 @@ class IRCClient:
         if msg.source.nick == self.nick and channel_name not in self.channels:
             self.channels[channel_name] = Channel(name=channel_name)
 
-        user = User(msg.source)
+        user = self.users[msg.source.nick]
         self.channels[channel_name].members[user.source.nick] = Member(user)
 
-        return [ChannelJoinedEvent(channel=channel_name, **msg.__dict__)]
+        return [ChannelJoinedEvent(channel=channel_name, user=user, **msg.__dict__)]
 
     def _process_part_message(self, msg: Message):
         channel_name = msg.params[0]
@@ -262,12 +289,24 @@ class IRCClient:
         else:
             self.channels[channel_name].members.pop(msg.source.nick)
 
-        return [ChannelPartEvent(channel=channel_name, **msg.__dict__)]
+        user = self.users[msg.source.nick]
+
+        return [ChannelPartEvent(channel=channel_name, user=user, **msg.__dict__)]
 
     def _process_quit_message(self, msg: Message):
+        # Generate an individual quit event for each channel a user was in
+        rv = list()
         for channel in self.channels.values():
-            channel.members.pop(msg.source.nick, None)
-        return [QuitEvent(reason=msg.params[0], **msg.__dict__)]
+            member = channel.members.pop(msg.source.nick, None)
+            if member is not None:
+                rv.append(QuitEvent(
+                    channel=channel.name,
+                    user=member.user,
+                    reason=msg.params[0],
+                    **msg.__dict__
+                ))
+
+        return rv
 
     def _process_nick_message(self, msg: Message):
         old_nick = msg.source.nick
@@ -275,14 +314,27 @@ class IRCClient:
         if msg.source.nick == self.nick:
             self.nick = new_nick
 
+        user = self.users[old_nick]
+        del self.users[old_nick]
+        user.source.source.replace(old_nick + '!', new_nick + '!')
+        user.source.nick = new_nick
+        self.users[new_nick] = user
+
+        # Generate an individual event for each channel a user is in
+        rv = list()
         for channel in self.channels.values():
             if old_nick in channel.members:
                 member = channel.members.pop(old_nick)
-                member.user.source.source.replace(old_nick + '!', new_nick + '!')
-                member.user.source.nick = new_nick
                 channel.members[new_nick] = member
+                rv.append(NickChangedEvent(
+                    channel=channel.name,
+                    user=user,
+                    old_nick=old_nick,
+                    new_nick=new_nick,
+                    **msg.__dict__
+                ))
 
-        return [NickChangedEvent(old_nick=old_nick, new_nick=new_nick, **msg.__dict__)]
+        return rv
 
     def _process_332_message(self, msg: Message):
         channel_name, topic = msg.params[1], msg.params[2]

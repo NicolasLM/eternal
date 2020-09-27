@@ -118,22 +118,6 @@ class UI:
 
         self.pile.contents = pile_widgets
 
-    def process_changed_nick(self, old: str, new: Optional[str], line: urwid.Text):
-        for channel in self._channels:
-            channel.members_updated = True
-            # TODO: reimplement detection of whether a nick was in a channel or not
-            # try:
-            #     channel.members.remove(old)
-            # except KeyError:
-            #     pass
-            # else:
-            #     channel.list_walker.append(line)
-            #     if new:
-            #         channel.members.add(new)
-
-        self._update_content()
-        self._render_members()
-
     def _render_members(self):
         self.members_pile.contents = self.get_current_channel().get_members_pile_widgets()
 
@@ -222,6 +206,14 @@ class UI:
     def get_current_channel(self) -> Channel:
         return self._channels[self._current]
 
+    def _channel_member_update(self, msg: libirc.Message, time: str, texts: list):
+        _, channel = self._get_channel_by_name(msg.channel)
+        channel.members_updated = True
+        self._render_members()
+        if msg.user.is_recently_active:
+            channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(msg.source)), str(msg.source))] + texts))
+            self._update_content()
+
     async def consume_messages(self):
         queue = self.protocol.inbox
         while True:
@@ -233,29 +225,19 @@ class UI:
             time = get_local_time(msg.time)
 
             if isinstance(msg, libirc.ChannelJoinedEvent):
-                _, channel = self._get_channel_by_name(msg.channel)
-                channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(msg.source)), str(msg.source)), f' joined {msg.channel}']))
-                channel.members_updated = True
-                self._update_content()
-                self._render_members()
+                self._channel_member_update(msg, time, [f' joined {msg.channel}'])
 
             elif isinstance(msg, libirc.ChannelPartEvent):
+                self._channel_member_update(msg, time, [f' left {msg.channel}'])
                 _, channel = self._get_channel_by_name(msg.channel)
-                channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(msg.source)), str(msg.source)), f' left {msg.channel}']))
                 if msg.channel not in self.protocol.irc.channels:
                     self.remove_channel(channel)
-                else:
-                    channel.members_updated = True
-                self._update_content()
-                self._render_members()
 
             elif isinstance(msg, libirc.NickChangedEvent):
-                line = urwid.Text([('Light gray', f'{time} '), (nick_color(str(msg.source)), str(msg.source)), ' is now known as ', (nick_color(str(msg.new_nick)), str(msg.new_nick))])
-                self.process_changed_nick(str(msg.source), msg.new_nick, line)
+                self._channel_member_update(msg, time, [' is now known as ', (nick_color(str(msg.new_nick)), str(msg.new_nick))])
 
             elif isinstance(msg, libirc.QuitEvent):
-                line = urwid.Text([('Light gray', f'{time} '), (nick_color(str(msg.source)), str(msg.source)), f' quit: {msg.reason}'])
-                self.process_changed_nick(str(msg.source), None, line)
+                self._channel_member_update(msg, time, [f' quit: {msg.reason}'])
 
             elif isinstance(msg, libirc.NewMessageEvent):
                 if msg.channel == '*':
