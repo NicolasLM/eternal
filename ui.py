@@ -77,9 +77,12 @@ class Channel:
             members = self.ui.protocol.irc.sort_members_by_prefix(members)
 
             self._members_pile_widget = [
+                (urwid.Text(str(len(members)), align='right'), ('pack', None))
+            ]
+            self._members_pile_widget.extend([
                 (urwid.Text((nick_color(m.user.source.nick), m.prefixes + m.user.source.nick)), ('pack', None))
                 for m in islice(members, 64)
-            ]
+            ])
             self.members_updated = False
 
         return self._members_pile_widget
