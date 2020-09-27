@@ -86,7 +86,9 @@ def test_sort_members():
     m4 = Member(User(source=Source(nick='admin')), prefixes='!')
     m5 = Member(User(source=Source(nick='voiced')), prefixes='+')
     m6 = Member(User(source=Source(nick='1user')), prefixes='')
-    members = [m2, m4, m1, m6, m3, m5]
+    m7 = Member(User(source=Source(nick='Adel')), prefixes='')
+    m8 = Member(User(source=Source(nick='abel')), prefixes='')
+    members = [m2, m4, m8, m1, m6, m3, m7, m5]
 
     irc = IRCClient({'nick': 'nick'})
-    assert irc.sort_members_by_prefix(members) == [m4, m1, m5, m6, m2, m3]
+    assert irc.sort_members_by_prefix(members) == [m4, m1, m5, m6, m8, m7, m2, m3]

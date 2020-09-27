@@ -354,7 +354,7 @@ class IRCClient:
             members,
             key=lambda m: (
                 [str(self.member_prefixes.index(c)) for c in m.prefixes] or ['z']
-                + list(m.user.source.nick)
+                + list(m.user.source.nick.lower())
             )
         )
 
