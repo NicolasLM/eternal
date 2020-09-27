@@ -1,7 +1,7 @@
 from libirc import (
     parse_message, parse_received, parse_message_tags, parse_message_params,
     parse_message_source, Source, parse_capabilities_ls, get_sasl_plain_payload,
-    Message
+    Message, IRCClient, Member, User
 )
 
 
@@ -77,3 +77,16 @@ def test_parse_capabilities_ls():
 
 def test_get_sasl_plain_payload():
     assert get_sasl_plain_payload('foo', 'bar') == 'Zm9vAGZvbwBiYXI='
+
+
+def test_sort_members():
+    m1 = Member(User(source=Source(nick='op')), prefixes='@')
+    m2 = Member(User(source=Source(nick='bar')), prefixes='')
+    m3 = Member(User(source=Source(nick='baz')), prefixes='')
+    m4 = Member(User(source=Source(nick='admin')), prefixes='!')
+    m5 = Member(User(source=Source(nick='voiced')), prefixes='+')
+    m6 = Member(User(source=Source(nick='1user')), prefixes='')
+    members = [m2, m4, m1, m6, m3, m5]
+
+    irc = IRCClient({'nick': 'nick'})
+    assert irc.sort_members_by_prefix(members) == [m4, m1, m5, m6, m2, m3]

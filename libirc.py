@@ -3,7 +3,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import logging
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Iterable
 
 
 logger = logging.getLogger(__name__)
@@ -292,6 +292,19 @@ class IRCClient:
             pass
 
         return [ChannelTopicEvent(channel=channel_name, topic=topic, **msg.__dict__)]
+
+    def sort_members_by_prefix(self, members: Iterable[Member]) -> List[Member]:
+        """Sort members of a channel.
+
+        Equivalent to ORDER BY prefix, nick.
+        """
+        return sorted(
+            members,
+            key=lambda m: (
+                [str(self.member_prefixes.index(c)) for c in m.prefixes] or ['z']
+                + list(m.user.source.nick)
+            )
+        )
 
 
 def parse_message(data: bytearray) -> Message:

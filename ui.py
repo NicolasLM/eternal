@@ -70,13 +70,15 @@ class Channel:
         if self.members_updated:
             self._members_pile_widget = list()
             try:
-                members = self.ui.protocol.irc.channels[self.name].members.keys()
+                members = self.ui.protocol.irc.channels[self.name].members.values()
             except KeyError:
                 members = []
 
+            members = self.ui.protocol.irc.sort_members_by_prefix(members)
+
             self._members_pile_widget = [
-                (urwid.Text((nick_color(nick), nick)), ('pack', None))
-                for nick in islice(members, 64)
+                (urwid.Text((nick_color(m.user.source.nick), m.prefixes + m.user.source.nick)), ('pack', None))
+                for m in islice(members, 64)
             ]
             self.members_updated = False
 
