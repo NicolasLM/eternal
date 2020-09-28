@@ -69,12 +69,18 @@ def test_parse_message_source():
 
 
 def test_parse_capabilities_ls():
-    params = ['*', 'LS', 'multi-prefix sasl=PLAIN,EXTERNAL server-time draft/packing=EX1,EX2']
+    params = [
+        '*',
+        'LS',
+        'multi-prefix sasl=PLAIN,EXTERNAL server-time draft/packing=EX1,EX2 '
+        'draft/multiline=max-bytes=4096,max-lines=24'
+    ]
     assert parse_capabilities_ls(params) == {
         'multi-prefix': True,
         'sasl': 'PLAIN,EXTERNAL',
         'server-time': True,
-        'draft/packing': 'EX1,EX2'
+        'draft/packing': 'EX1,EX2',
+        'draft/multiline': 'max-bytes=4096,max-lines=24'
     }
     params = ['*', 'LS', '*', 'multi-prefix']
     assert parse_capabilities_ls(params) == {

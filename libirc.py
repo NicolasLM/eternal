@@ -469,7 +469,7 @@ def parse_capabilities_ls(cap_params: List[str]) -> Dict[str, Union[bool, str]]:
     capabilities = cap_str.split(' ')
     for capability in capabilities:
         if '=' in capability:
-            key, value = capability.split('=')
+            key, value = capability.split('=', maxsplit=1)
         else:
             key = capability
             value = True
