@@ -106,3 +106,6 @@ class IRCClientProtocol(asyncio.Protocol):
             self.send_to_server('CAP REQ :batch')
 
         self.send_to_server('CAP END')
+
+        for channel in self._config.get('channels', []):
+            self.send_to_server(f'JOIN {channel}')
