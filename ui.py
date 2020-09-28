@@ -64,6 +64,8 @@ class Channel:
         self.ui = ui
         self.list_walker = urwid.SimpleFocusListWalker([])
         self.members_updated = False
+        self.has_unread = False
+        self.has_notification = False
         self._members_pile_widget = list()
 
     def get_members_pile_widgets(self) -> list:
@@ -113,7 +115,11 @@ class UI:
         pile_widgets = list()
         for index, channel in enumerate(self._channels):
             if index == self._current:
-                widget = urwid.Text(('Bold', channel.name))
+                widget = urwid.Text(('White', channel.name))
+            elif channel.has_notification:
+                widget = urwid.Text(('Yellow', channel.name))
+            elif channel.has_unread:
+                widget = urwid.Text(('Dark green', channel.name))
             else:
                 widget = urwid.Text(channel.name)
 
@@ -141,12 +147,16 @@ class UI:
         self._render_members()
 
     def _update_content(self):
-        channel_list_walker = self._channels[self._current].list_walker
+        channel = self._channels[self._current]
+        channel_list_walker = channel.list_walker
         self.chat_content.body = channel_list_walker
         try:
             self.chat_content.set_focus(channel_list_walker.positions(True)[0])
         except IndexError:
             pass
+        channel.has_unread = False
+        channel.has_notification = False
+        self._update_pile()
 
     def select_previous(self):
         """Select previous channel."""
@@ -247,6 +257,9 @@ class UI:
                     _, channel = self._get_channel_by_name('server')
                 else:
                     _, channel = self._get_channel_by_name(msg.channel)
+                if self.protocol.irc.nick in msg.message:
+                    channel.has_notification = True
+                channel.has_unread = True
                 channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(msg.source)), str(msg.source)), f': {msg.message}']))
                 self._update_content()
 
