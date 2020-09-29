@@ -1,12 +1,13 @@
 from datetime import datetime
 from itertools import islice
 import hashlib
-from typing import List, Tuple, Optional
+from typing import List, Optional
 
 import urwid
 import urwid_readline
 
 import libirc
+import airc
 
 
 palette = [
@@ -59,24 +60,25 @@ def nick_color(nick: str) -> str:
 
 class Channel:
 
-    def __init__(self, name: str, ui: 'UI'):
+    def __init__(self, name: str, connection: airc.IRCClientProtocol):
         self.name = name
-        self.ui = ui
+        self.connection = connection
         self.list_walker = urwid.SimpleFocusListWalker([])
         self.members_updated = False
         self.has_unread = False
         self.has_notification = False
+        self.is_connection_default = False
         self._members_pile_widget = list()
 
     def get_members_pile_widgets(self) -> list:
         if self.members_updated:
             self._members_pile_widget = list()
             try:
-                members = self.ui.protocol.irc.channels[self.name].members.values()
+                members = self.connection.irc.channels[self.name].members.values()
             except KeyError:
                 members = []
 
-            members = self.ui.protocol.irc.sort_members_by_prefix(members)
+            members = self.connection.irc.sort_members_by_prefix(members)
 
             self._members_pile_widget = [
                 (urwid.Text(str(len(members)), align='right'), ('pack', None))
@@ -99,8 +101,6 @@ class UI:
         self.pile = urwid.Pile([])
         self.members_pile = urwid.Pile([])
 
-        self.add_channel(Channel('server', self))
-
         columns = urwid.Columns([
             (20, urwid.LineBox(urwid.Filler(self.pile, valign='top'))),
             self.chat_content,
@@ -109,7 +109,11 @@ class UI:
         command_input = CommandEdit(self, ('Bold', "Command "))
         self.frame = MyFrame(self, body=columns, footer=command_input, focus_part='footer')
 
-        self.protocol = None
+    async def add_connection(self, connection: airc.IRCClientProtocol):
+        channel = Channel(connection.irc._config['server'], connection)
+        channel.is_connection_default = True
+        self.add_channel(channel)
+        await self._consume_messages(connection)
 
     def _update_pile(self):
         pile_widgets = list()
@@ -205,32 +209,38 @@ class UI:
         self._current += 1
         self._update_pile()
 
-    def _get_channel_by_name(self, name: str) -> Tuple[int, Channel]:
-        i = 0
-        for i, channel in enumerate(self._channels):
+    def _get_channel_by_name(self, connection: airc.IRCClientProtocol, name: Optional[str]) -> Channel:
+        for channel in self._channels:
+            if channel.connection is not connection:
+                continue
+
             if channel.name == name:
-                return i, channel
+                return channel
+
+            if name is None and channel.is_connection_default:
+                return channel
 
         # Create channel if it doesn't exist
-        channel = Channel(name, self)
+        channel = Channel(name, connection)
         self.add_channel(channel)
-        return i + 1, channel
+        return channel
 
     def get_current_channel(self) -> Channel:
         return self._channels[self._current]
 
-    def _channel_member_update(self, msg: libirc.Message, time: str, texts: list):
-        _, channel = self._get_channel_by_name(msg.channel)
+    def _channel_member_update(self, msg: libirc.Message, time: str,
+                               connection: airc.IRCClientProtocol, texts: list) -> Channel:
+        channel = self._get_channel_by_name(connection, msg.channel)
         channel.members_updated = True
         self._render_members()
         if msg.user.is_recently_active:
             channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(msg.source)), str(msg.source))] + texts))
             self._update_content()
+        return channel
 
-    async def consume_messages(self):
-        queue = self.protocol.inbox
+    async def _consume_messages(self, connection: airc.IRCClientProtocol):
         while True:
-            msg = await queue.get()
+            msg = await connection.inbox.get()
 
             if isinstance(msg, libirc.ConnectionClosedEvent):
                 raise urwid.ExitMainLoop()
@@ -238,47 +248,47 @@ class UI:
             time = get_local_time(msg.time)
 
             if isinstance(msg, libirc.ChannelJoinedEvent):
-                self._channel_member_update(msg, time, [f' joined {msg.channel}'])
+                self._channel_member_update(msg, time, connection, [f' joined {msg.channel}'])
 
             elif isinstance(msg, libirc.ChannelPartEvent):
-                self._channel_member_update(msg, time, [f' left {msg.channel}'])
-                _, channel = self._get_channel_by_name(msg.channel)
-                if msg.channel not in self.protocol.irc.channels:
+                channel = self._channel_member_update(msg, time, connection, [f' left {msg.channel}'])
+                if msg.channel not in connection.irc.channels:
                     self.remove_channel(channel)
 
             elif isinstance(msg, libirc.NickChangedEvent):
-                self._channel_member_update(msg, time, [' is now known as ', (nick_color(str(msg.new_nick)), str(msg.new_nick))])
+                self._channel_member_update(msg, time, connection, [' is now known as ', (nick_color(str(msg.new_nick)), str(msg.new_nick))])
 
             elif isinstance(msg, libirc.QuitEvent):
-                self._channel_member_update(msg, time, [f' quit: {msg.reason}'])
+                self._channel_member_update(msg, time, connection, [f' quit: {msg.reason}'])
 
             elif isinstance(msg, libirc.NewMessageEvent):
                 if msg.channel == '*':
-                    _, channel = self._get_channel_by_name('server')
+                    channel = self._get_channel_by_name(connection, None)
                 else:
-                    _, channel = self._get_channel_by_name(msg.channel)
-                if self.protocol.irc.nick in msg.message:
+                    channel = self._get_channel_by_name(connection, msg.channel)
+                if connection.irc.nick in msg.message:
                     channel.has_notification = True
                 channel.has_unread = True
                 channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(msg.source)), str(msg.source)), f': {msg.message}']))
                 self._update_content()
 
             elif isinstance(msg, libirc.ChannelTopicEvent):
-                _, channel = self._get_channel_by_name(msg.channel)
+                channel = self._get_channel_by_name(connection, msg.channel)
                 channel.list_walker.append(urwid.Text(msg.topic))
                 self._update_content()
 
             elif isinstance(msg, libirc.ChannelNamesEvent):
-                _, channel = self._get_channel_by_name(msg.channel)
+                channel = self._get_channel_by_name(connection, msg.channel)
                 channel.members_updated = True
                 self._render_members()
                 self._update_content()
 
             else:
-                self._channels[0].list_walker.append(urwid.Text(str(msg)))
+                channel = self._get_channel_by_name(connection, None)
+                channel.list_walker.append(urwid.Text(str(msg)))
                 self._update_content()
 
-            queue.task_done()
+            connection.inbox.task_done()
 
 
 class CommandEdit(urwid_readline.ReadlineEdit):
@@ -292,43 +302,45 @@ class CommandEdit(urwid_readline.ReadlineEdit):
         if key != 'enter':
             return super().keypress(size, key)
 
+        channel = self.ui.get_current_channel()
         command = self.get_edit_text()
         if command == '':
             # Don't send empty messages
             return
 
         elif command == '/close':
-            self.ui.remove_channel(self.ui.get_current_channel())
+            self.ui.remove_channel(channel)
         elif command == '/part':
-            self.ui.protocol.send_to_server(f'PART {self.ui.get_current_channel().name}')
+            channel.connection.send_to_server(f'PART {channel.name}')
         elif command.startswith('/msg'):
+            connection = channel.connection
             _, channel_name, content = command.split(' ', maxsplit=2)
-            self.ui.protocol.send_to_server(f'PRIVMSG {channel_name} :{content}')
+            connection.send_to_server(f'PRIVMSG {channel_name} :{content}')
 
-            if 'echo-message' not in self.ui.protocol.irc.capabilities:
-                _, channel = self.ui._get_channel_by_name(channel_name)
+            if 'echo-message' not in connection.irc.capabilities:
+                channel = self.ui._get_channel_by_name(connection, channel_name)
                 time = get_local_time(libirc.get_utc_now())
-                source = self.ui.protocol.irc.nick
+                source = connection.irc.nick
                 channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(source)), str(source)), f': {content}']))
                 self.ui._update_content()
 
         elif command.startswith('/'):
-            self.ui.protocol.send_to_server(command[1:])
+            channel.connection.send_to_server(command[1:])
         else:
-            channel = self.ui.get_current_channel()
-            self.ui.protocol.send_to_server(f'PRIVMSG {channel.name} :{command}')
+            channel.connection.send_to_server(f'PRIVMSG {channel.name} :{command}')
 
-            if 'echo-message' not in self.ui.protocol.irc.capabilities:
+            if 'echo-message' not in channel.connection.irc.capabilities:
                 time = get_local_time(libirc.get_utc_now())
-                source = self.ui.protocol.irc.nick
+                source = channel.connection.irc.nick
                 channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(source)), str(source)), f': {command}']))
                 self.ui._update_content()
 
         self.set_edit_text('')
 
     def _auto_complete(self, text, state):
+        channel = self.ui.get_current_channel()
         try:
-            candidates = self.ui.protocol.irc.channels[self.ui.get_current_channel().name].members.keys()
+            candidates = channel.connection.irc.channels[channel.name].members.keys()
         except KeyError:
             candidates = list()
         tmp = [c + ', ' for c in candidates if c and c.startswith(text)] if text else candidates

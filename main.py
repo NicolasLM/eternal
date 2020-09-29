@@ -17,18 +17,13 @@ async def init(irc_connection_config: dict, ui: UI):
         irc_connection_config['port'],
         ssl=irc_connection_config['ssl']
     )
-    ui.protocol = protocol
-    consume_messages_task = loop.create_task(ui.consume_messages())
+    await ui.add_connection(protocol)
 
 
 def main():
     import logging
     logging.basicConfig(filename='/tmp/irc.log', level=logging.DEBUG)
-    with open(sys.argv[1]) as f:
-        irc_connection_config = json.load(f)
 
-    # Get a reference to the event loop as we plan to use
-    # low-level APIs.
     loop = asyncio.get_event_loop()
 
     ui = UI()
@@ -38,10 +33,12 @@ def main():
         palette,
         event_loop=urwid.AsyncioEventLoop(loop=loop)
     )
-    loop.create_task(init(irc_connection_config, ui))
 
-    # Wait until the protocol signals that the connection
-    # is lost and close the transport.
+    for config_file_name in sys.argv[1:]:
+        with open(config_file_name) as f:
+            irc_connection_config = json.load(f)
+        loop.create_task(init(irc_connection_config, ui))
+
     urwid_main_loop.run()
 
 
