@@ -35,6 +35,13 @@ def get_local_time(aware_utc_datetime: datetime) -> str:
     return aware_utc_datetime.astimezone(tz=None).strftime('%H:%M')
 
 
+def fit(string: str, max_length: int):
+    if len(string) <= max_length:
+        return string
+
+    return string[:max_length - 1] + '…'
+
+
 def nick_color(nick: str) -> str:
     colors = [
         'Black',
@@ -94,6 +101,8 @@ class Channel:
 
 class UI:
 
+    COLUMN_WIDTH = 20
+
     def __init__(self):
         self._current = 0
         self._channels: List[Channel] = []
@@ -102,9 +111,9 @@ class UI:
         self.members_pile = urwid.Pile([])
 
         columns = urwid.Columns([
-            (20, urwid.LineBox(urwid.Filler(self.pile, valign='top'))),
+            (self.COLUMN_WIDTH, urwid.LineBox(urwid.Filler(self.pile, valign='top'))),
             self.chat_content,
-            (20, urwid.LineBox(urwid.Filler(self.members_pile, valign='top'))),
+            (self.COLUMN_WIDTH, urwid.LineBox(urwid.Filler(self.members_pile, valign='top'))),
         ])
         command_input = CommandEdit(self, ('Bold', "Command "))
         self.frame = MyFrame(self, body=columns, footer=command_input, focus_part='footer')
@@ -126,6 +135,8 @@ class UI:
                 text = channel.name
             else:
                 text = f' {channel.name}'
+
+            text = fit(text, self.COLUMN_WIDTH - 2)
 
             if index == self._current:
                 widget = urwid.Text(('White', text))
