@@ -118,14 +118,23 @@ class UI:
     def _update_pile(self):
         pile_widgets = list()
         for index, channel in enumerate(self._channels):
-            if index == self._current:
-                widget = urwid.Text(('White', channel.name))
-            elif channel.has_notification:
-                widget = urwid.Text(('Yellow', channel.name))
-            elif channel.has_unread:
-                widget = urwid.Text(('Dark green', channel.name))
+
+            if index > 0 and channel.is_connection_default:
+                pile_widgets.append((urwid.Text(''), ('pack', None)))
+
+            if channel.is_connection_default:
+                text = channel.name
             else:
-                widget = urwid.Text(channel.name)
+                text = f' {channel.name}'
+
+            if index == self._current:
+                widget = urwid.Text(('White', text))
+            elif channel.has_notification:
+                widget = urwid.Text(('Yellow', text))
+            elif channel.has_unread:
+                widget = urwid.Text(('Dark green', text))
+            else:
+                widget = urwid.Text(text)
 
             pile_widgets.append((widget, ('pack', None)))
 
@@ -135,7 +144,16 @@ class UI:
         self.members_pile.contents = self.get_current_channel().get_members_pile_widgets()
 
     def add_channel(self, channel: Channel):
-        self._channels.append(channel)
+        # Find the position after the last channel of the same connection
+        insert_at = len(self._channels)
+        for i, c in enumerate(self._channels):
+            if c.connection is channel.connection:
+                insert_at = i + 1
+
+        if self._current > insert_at:
+            self._current += 1
+
+        self._channels.insert(insert_at, channel)
         self._update_pile()
         if len(self._channels) == 1:
             self._update_content()
@@ -191,20 +209,44 @@ class UI:
 
     def move_up(self):
         """Move a channel up the list."""
-        if self._current == 0:
+        i = self._current
+        if i == 0:
             return
 
-        i = self._current
+        try:
+            current_c = self._channels[i]
+            previous_c = self._channels[i-1]
+        except IndexError:
+            return
+
+        if current_c.connection is not previous_c.connection:
+            return
+
+        if current_c.is_connection_default or previous_c.is_connection_default:
+            return
+
         self._channels[i], self._channels[i-1] = self._channels[i-1], self._channels[i]
         self._current -= 1
         self._update_pile()
 
     def move_down(self):
         """Move a channel down the list."""
-        if self._current == len(self._channels) - 1:
+        i = self._current
+        if i == len(self._channels) - 1:
             return
 
-        i = self._current
+        try:
+            current_c = self._channels[i]
+            next_c = self._channels[i + 1]
+        except IndexError:
+            return
+
+        if current_c.connection is not next_c.connection:
+            return
+
+        if current_c.is_connection_default or next_c.is_connection_default:
+            return
+
         self._channels[i], self._channels[i + 1] = self._channels[i + 1], self._channels[i]
         self._current += 1
         self._update_pile()
