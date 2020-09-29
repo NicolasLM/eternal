@@ -2,6 +2,7 @@ import base64
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
+import enum
 import logging
 from typing import List, Dict, Union, Iterable, Optional
 
@@ -27,6 +28,15 @@ def parse_received(recv_buffer: bytearray):
 
 def get_utc_now() -> datetime:
     return datetime.utcnow().replace(tzinfo=timezone.utc)
+
+
+class Numeric(enum.Enum):
+
+    RPL_WELCOME = '001'
+    RPL_YOURHOST = '002'
+    RPL_CREATED = '003'
+    RPL_MYINFO = '004'
+    RPL_ISUPPORT = '005'
 
 
 @dataclass
@@ -140,6 +150,12 @@ class NewMessageEvent(Message):
 
 
 @dataclass
+class NewMessageFromServerEvent(Message):
+    """New message from the server."""
+    message: str = ''
+
+
+@dataclass
 class ChannelTopicEvent(Message):
     """Channel topic."""
     channel: str = ''
@@ -179,6 +195,7 @@ class IRCClient:
         self._recv_buffer = bytearray()
         self._tmp_channel_nicks: Dict[str, List[str]] = defaultdict(list)
         self._tmp_batches: Dict[str, List[Message]] = dict()
+        self._tmp_motd: List[str] = list()
         self.channels: Dict[str, Channel] = dict()
         self.users: Dict[str, User] = UserDefaultDict()
 
@@ -228,6 +245,25 @@ class IRCClient:
             self.users[msg.source.nick].last_message_at = get_utc_now()
 
             return [NewMessageEvent(channel=destination, message=msg.params[1], **msg.__dict__)]
+
+        if msg.command in ('001', '002', '003', '004'):
+            message = ' '.join(msg.params[1:])
+            return [NewMessageFromServerEvent(message=message, **msg.__dict__)]
+
+        if msg.command == '375':
+            self._tmp_motd = list()
+            return []
+
+        if msg.command == '372':
+            self._tmp_motd.append(
+                NewMessageFromServerEvent(message=msg.params[1], **msg.__dict__)
+            )
+            return []
+
+        if msg.command == '376':
+            motd = self._tmp_motd
+            self._tmp_motd = list()
+            return motd
 
         if msg.command == '353':
             channel = msg.params[2]

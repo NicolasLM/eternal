@@ -336,9 +336,14 @@ class UI:
                 self._render_members()
                 self._update_content()
 
+            elif isinstance(msg, libirc.NewMessageFromServerEvent):
+                channel = self._get_channel_by_name(connection, None)
+                channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), msg.message]))
+                self._update_content()
+
             else:
                 channel = self._get_channel_by_name(connection, None)
-                channel.list_walker.append(urwid.Text(str(msg)))
+                channel.list_walker.append(urwid.Text(msg.command + ' ' + ' '.join(msg.params)))
                 self._update_content()
 
             connection.inbox.task_done()
