@@ -1,7 +1,7 @@
 from libirc import (
     parse_message, parse_received, parse_message_tags, parse_message_params,
     parse_message_source, Source, parse_capabilities_ls, get_sasl_plain_payload,
-    Message, IRCClient, Member, User
+    Message, IRCClient, Member, User, parse_supported
 )
 
 
@@ -88,6 +88,24 @@ def test_parse_capabilities_ls():
     }
 
 
+def test_parse_supported():
+    params = [
+        'foo',
+        'ELIST=CTU',
+        '-WHOX',
+        'KNOCK',
+        'MONITOR=100',
+        'are supported by this server'
+    ]
+    supported, not_supported = parse_supported(params)
+    assert supported == {
+        'ELIST': 'CTU',
+        'KNOCK': '',
+        'MONITOR': '100'
+    }
+    assert not_supported == {'WHOX'}
+
+
 def test_get_sasl_plain_payload():
     assert get_sasl_plain_payload('foo', 'bar') == 'Zm9vAGZvbwBiYXI='
 
@@ -103,5 +121,6 @@ def test_sort_members():
     m8 = Member(User(source=Source(nick='abel')), prefixes='')
     members = [m2, m4, m8, m1, m6, m3, m7, m5]
 
-    irc = IRCClient({'nick': 'nick'})
+    irc = IRCClient({'nick': 'nick', 'server': 'server'})
+    irc.member_prefixes = '!~&@%+'
     assert irc.sort_members_by_prefix(members) == [m4, m1, m5, m6, m8, m7, m2, m3]

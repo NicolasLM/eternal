@@ -119,7 +119,7 @@ class UI:
         self.frame = MyFrame(self, body=columns, footer=command_input, focus_part='footer')
 
     async def add_connection(self, connection: airc.IRCClientProtocol):
-        channel = Channel(connection.irc._config['server'], connection)
+        channel = Channel(connection.irc.name, connection)
         channel.is_connection_default = True
         self.add_channel(channel)
         await self._consume_messages(connection)
@@ -132,6 +132,7 @@ class UI:
                 pile_widgets.append((urwid.Text(''), ('pack', None)))
 
             if channel.is_connection_default:
+                channel.name = channel.connection.irc.name
                 text = channel.name
             else:
                 text = f' {channel.name}'

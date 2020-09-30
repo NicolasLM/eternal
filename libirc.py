@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 import enum
 import logging
-from typing import List, Dict, Union, Iterable, Optional
+from typing import List, Dict, Union, Iterable, Optional, Tuple, Set
 
 
 logger = logging.getLogger(__name__)
@@ -183,21 +183,21 @@ class UserDefaultDict(defaultdict):
 
 class IRCClient:
 
-    # TODO: ready that from server
-    member_prefixes = '!~&@%+'
-
     def __init__(self, config: dict):
         self._config = config
 
         self.capabilities: Dict[str, Union[bool, str]] = {}
+        self.supported: Dict[str, str] = {}
+        self.member_prefixes = ''
+        self.name = config['server']
         self.nick = self._config['nick']
+        self.channels: Dict[str, Channel] = dict()
+        self.users: Dict[str, User] = UserDefaultDict()
 
         self._recv_buffer = bytearray()
         self._tmp_channel_nicks: Dict[str, List[str]] = defaultdict(list)
         self._tmp_batches: Dict[str, List[Message]] = dict()
         self._tmp_motd: List[str] = list()
-        self.channels: Dict[str, Channel] = dict()
-        self.users: Dict[str, User] = UserDefaultDict()
 
     def add_received_data(self, data: bytes):
         self._recv_buffer.extend(data)
@@ -249,6 +249,32 @@ class IRCClient:
         if msg.command in ('001', '002', '003', '004'):
             message = ' '.join(msg.params[1:])
             return [NewMessageFromServerEvent(message=message, **msg.__dict__)]
+
+        if msg.command == '005':
+            supported, not_supported = parse_supported(msg.params)
+            self.supported.update(supported)
+            for ns in not_supported:
+                self.supported.pop(ns, None)
+
+            try:
+                prefix = self.supported['PREFIX']
+            except KeyError:
+                pass
+            else:
+                if prefix == '':
+                    self.member_prefixes = ''
+                else:
+                    _, self.member_prefixes = prefix.split(')')
+
+            try:
+                network = self.supported['NETWORK']
+            except KeyError:
+                pass
+            else:
+                if network:
+                    self.name = network
+
+            return []
 
         if msg.command == '375':
             self._tmp_motd = list()
@@ -516,3 +542,21 @@ def parse_capabilities_ls(cap_params: List[str]) -> Dict[str, Union[bool, str]]:
 
 def get_sasl_plain_payload(user: str, password: str) -> str:
     return base64.b64encode(f'{user}\00{user}\00{password}'.encode()).decode()
+
+
+def parse_supported(params: List[str]) -> Tuple[Dict[str, str], Set[str]]:
+    supported = dict()
+    not_supported = set()
+    for param in params[1:-1]:
+        if '=' in param:
+            key, value = param.split('=', maxsplit=1)
+        else:
+            key = param
+            value = ''
+
+        if key.startswith('-'):
+            not_supported.add(key[1:])
+        else:
+            supported[key] = value
+
+    return supported, not_supported
