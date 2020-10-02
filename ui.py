@@ -1,7 +1,8 @@
 from datetime import datetime
 from itertools import islice
 import hashlib
-from typing import List, Optional
+import re
+from typing import List, Optional, Tuple
 
 import urwid
 import urwid_readline
@@ -323,12 +324,12 @@ class UI:
                 if connection.irc.nick in msg.message:
                     channel.has_notification = True
                 channel.has_unread = True
-                channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(msg.source)), str(msg.source)), f': {msg.message}']))
+                channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(msg.source)), str(msg.source)), ': ', *convert_formatting(msg.message)]))
                 self._update_content()
 
             elif isinstance(msg, libirc.ChannelTopicEvent):
                 channel = self._get_channel_by_name(connection, msg.channel)
-                channel.list_walker.append(urwid.Text(msg.topic))
+                channel.list_walker.append(urwid.Text(*convert_formatting(msg.topic)))
                 self._update_content()
 
             elif isinstance(msg, libirc.ChannelNamesEvent):
@@ -339,7 +340,7 @@ class UI:
 
             elif isinstance(msg, libirc.NewMessageFromServerEvent):
                 channel = self._get_channel_by_name(connection, None)
-                channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), msg.message]))
+                channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), *convert_formatting(msg.message)]))
                 self._update_content()
 
             else:
@@ -437,3 +438,123 @@ class MyFrame(urwid.Frame):
             return self.get_body().keypress(size, key)
 
         return super().keypress(size, key)
+
+
+TOGGLE_FORMATTERS = {
+    '\x02': 'bold',
+    '\x1D': 'italics',
+    '\x1E': 'strikethrough',
+    '\x1F': 'underline',
+    '\x16': 'standout',
+}
+COLOR = '\x03'
+RESET = '\x0F'
+FORMATTERS = list(TOGGLE_FORMATTERS.keys()) + [COLOR, RESET]
+COLOR_REGEX = re.compile(r'^(\d{1,2})(,(\d{1,2}))?')
+IRC_TO_URWID_COLORS = {
+    0: 'white',
+    1: 'black',
+    2: 'dark blue',
+    3: 'dark green',
+    4: 'dark red',
+    5: 'brown',
+    6: 'dark magenta',
+    7: 'light red',
+    8: 'yellow',
+    9: 'light green',
+    10: 'dark cyan',
+    11: 'light cyan',
+    12: 'light blue',
+    13: 'light magenta',
+    14: 'dark gray',
+    15: 'light gray'
+}
+
+
+def convert_formatting(irc_string: str) -> List[Tuple[urwid.AttrSpec, str]]:
+    rv = list()
+
+    current_format: List[str] = []
+    current_fg_color = ''
+    current_bg_color = ''
+    current_format_used = False
+    current_text_start_idx = 0
+    i = 0
+    skip_next = 0
+
+    def _toggle(formatter: str):
+        try:
+            current_format.remove(formatter)
+        except ValueError:
+            current_format.append(formatter)
+
+    def _finish_substring(end: int):
+        if current_fg_color:
+            to_join = [current_fg_color] + current_format
+        else:
+            to_join = current_format
+        fg = ','.join(to_join)
+        rv.append((urwid.AttrSpec(fg, current_bg_color), irc_string[current_text_start_idx:end]))
+
+    def _process_color() -> Tuple[str, str, int]:
+        try:
+            match = COLOR_REGEX.match(irc_string[i+1:])
+        except IndexError:
+            return '', '', 0
+
+        if not match:
+            return '', '', 0
+
+        fg, middle, bg = match.groups()
+        middle = middle or ''
+        bg = bg or ''
+        return fg, bg, len(fg) + len(middle)
+
+    for i, s in enumerate(irc_string):
+        if skip_next:
+            skip_next -= 1
+            continue
+
+        if not current_format_used:
+            current_text_start_idx = i
+
+        if s not in FORMATTERS:
+            current_format_used = True
+            continue
+
+        # Current char is a format code
+
+        # Finish the previous substring
+        if current_format_used:
+            _finish_substring(end=i)
+
+        current_format_used = False
+        if s == RESET:
+            current_format = []
+            current_fg_color = ''
+            current_bg_color = ''
+        elif s in TOGGLE_FORMATTERS.keys():
+            _toggle(TOGGLE_FORMATTERS[s])
+        elif s == COLOR:
+            fg, bg, skip_next = _process_color()
+            try:
+                current_fg_color = IRC_TO_URWID_COLORS[int(fg)]
+            except ValueError:
+                current_fg_color = ''
+            except KeyError:
+                current_fg_color = 'h' + fg  # This is not the right color
+
+            try:
+                current_bg_color = IRC_TO_URWID_COLORS[int(bg)]
+            except ValueError:
+                current_bg_color = ''
+            except KeyError:
+                current_bg_color = 'h' + bg
+
+        else:
+            raise Exception('Unreachable')
+
+    if current_format_used:
+        _finish_substring(end=i+1)
+
+    return rv
