@@ -415,31 +415,9 @@ class IRCClient:
         rv = []
         target, modestring, *args = msg.params
 
-        def _iter_modestring(is_channel: bool):
-            is_add = True
-            args_i = 0
-            for m in modestring:
-                if m == '+':
-                    is_add = True
-                elif m == '-':
-                    is_add = False
-                elif not is_channel:
-                    yield is_add, m, None
-                elif m in self.member_prefixes:
-                    yield is_add, m, args[args_i]
-                    args_i += 1
-                elif self.channel_modes[m] in ('A', 'B'):
-                    yield is_add, m, args[args_i]
-                    args_i += 1
-                elif self.channel_modes[m] == 'C' and is_add:
-                    yield is_add, m, args[args_i]
-                    args_i += 1
-                else:
-                    yield is_add, m, None
-
         if target in self.channels:
             channel = self.channels[target]
-            for is_add, mode, arg in _iter_modestring(True):
+            for is_add, mode, arg in self._iter_modestring(modestring, args, True):
                 if mode in self.member_prefixes:
                     if is_add:
                         channel.members[arg].prefixes += self.member_prefixes[mode]
@@ -458,7 +436,7 @@ class IRCClient:
 
         elif target in self.users:
             user = self.users[target]
-            for is_add, mode, _ in _iter_modestring(False):
+            for is_add, mode, _ in self._iter_modestring(modestring, args, False):
                 if is_add:
                     user.modes += mode
                 else:
@@ -468,6 +446,11 @@ class IRCClient:
             logger.warning('Received a MODE message for a target that does not exist')
 
         return rv
+
+    def _process_221_message(self, msg: Message):
+        """RPL_UMODEIS gives the current modes of the connected client."""
+        self.users[msg.params[0]].modes = msg.params[1][1:]
+        return []
 
     def _process_332_message(self, msg: Message):
         channel_name, topic = msg.params[1], msg.params[2]
@@ -500,6 +483,28 @@ class IRCClient:
                 + list(m.user.source.nick.lower())
             )
         )
+
+    def _iter_modestring(self, modestring: str, args: list, is_channel: bool):
+        is_add = True
+        args_i = 0
+        for m in modestring:
+            if m == '+':
+                is_add = True
+            elif m == '-':
+                is_add = False
+            elif not is_channel:
+                yield is_add, m, None
+            elif m in self.member_prefixes:
+                yield is_add, m, args[args_i]
+                args_i += 1
+            elif self.channel_modes[m] in ('A', 'B'):
+                yield is_add, m, args[args_i]
+                args_i += 1
+            elif self.channel_modes[m] == 'C' and is_add:
+                yield is_add, m, args[args_i]
+                args_i += 1
+            else:
+                yield is_add, m, None
 
 
 def parse_message(data: bytearray) -> Message:
