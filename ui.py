@@ -32,6 +32,10 @@ palette = [
 ]
 
 
+def get_local_date(aware_utc_datetime: datetime) -> str:
+    return aware_utc_datetime.astimezone(tz=None).strftime('%Y-%m-%d')
+
+
 def get_local_time(aware_utc_datetime: datetime) -> str:
     return aware_utc_datetime.astimezone(tz=None).strftime('%H:%M')
 
@@ -330,6 +334,11 @@ class UI:
             elif isinstance(msg, libirc.ChannelTopicEvent):
                 channel = self._get_channel_by_name(connection, msg.channel)
                 channel.list_walker.append(urwid.Text(*convert_formatting(msg.topic)))
+                self._update_content()
+
+            elif isinstance(msg, libirc.ChannelTopicWhoTimeEvent):
+                channel = self._get_channel_by_name(connection, msg.channel)
+                channel.list_walker.append(urwid.Text(['Set by ', (nick_color(str(msg.set_by)), str(msg.set_by)), f' on {get_local_date(msg.set_at)}']))
                 self._update_content()
 
             elif isinstance(msg, libirc.ChannelNamesEvent):

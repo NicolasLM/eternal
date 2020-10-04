@@ -163,6 +163,14 @@ class ChannelTopicEvent(Message):
 
 
 @dataclass
+class ChannelTopicWhoTimeEvent(Message):
+    """Channel topic."""
+    channel: str = ''
+    set_by: Source = field(default_factory=Source)
+    set_at: datetime = field(default_factory=lambda: datetime(tzinfo=timezone.utc))
+
+
+@dataclass
 class ChannelNamesEvent(Message):
     """List of nicks in a channel."""
     channel: str = ''
@@ -469,6 +477,15 @@ class IRCClient:
             pass
 
         return [ChannelTopicEvent(channel=channel_name, topic=topic, **msg.__dict__)]
+
+    def _process_333_message(self, msg: Message):
+        channel_name, who, date = msg.params[1], msg.params[2], msg.params[3]
+        return [ChannelTopicWhoTimeEvent(
+            channel=channel_name,
+            set_by=parse_message_source(who),
+            set_at=datetime.fromtimestamp(int(date), tz=timezone.utc),
+            **msg.__dict__
+        )]
 
     def sort_members_by_prefix(self, members: Iterable[Member]) -> List[Member]:
         """Sort members of a channel.
