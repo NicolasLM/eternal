@@ -1,7 +1,8 @@
 from libirc import (
     parse_message, parse_received, parse_message_tags, parse_message_params,
     parse_message_source, Source, parse_capabilities_ls, get_sasl_plain_payload,
-    Message, IRCClient, Member, User, parse_supported
+    Message, IRCClient, Member, User, parse_supported, parse_chanmodes,
+    parse_member_prefixes
 )
 
 
@@ -122,5 +123,28 @@ def test_sort_members():
     members = [m2, m4, m8, m1, m6, m3, m7, m5]
 
     irc = IRCClient({'nick': 'nick', 'server': 'server'})
-    irc.member_prefixes = '!~&@%+'
+    irc.member_prefixes = parse_member_prefixes('(Yqaohv)!~&@%+')
     assert irc.sort_members_by_prefix(members) == [m4, m1, m5, m6, m8, m7, m2, m3]
+
+
+def test_parse_member_prefixes():
+    assert parse_member_prefixes('') == {}
+    assert parse_member_prefixes('(ov)@+') == {'o': '@', 'v': '+'}
+    assert parse_member_prefixes('(ohv)@%+') == {'o': '@', 'h': '%', 'v': '+'}
+
+
+def test_parse_chanmodes():
+    assert parse_chanmodes('') == {}
+    assert parse_chanmodes('b,k,l,imn') == {
+        'b': 'A',
+        'k': 'B',
+        'l': 'C',
+        'i': 'D',
+        'm': 'D',
+        'n': 'D'
+    }
+    assert parse_chanmodes(',,,imn') == {
+        'i': 'D',
+        'm': 'D',
+        'n': 'D'
+    }

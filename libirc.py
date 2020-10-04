@@ -188,7 +188,8 @@ class IRCClient:
 
         self.capabilities: Dict[str, Union[bool, str]] = {}
         self.supported: Dict[str, str] = {}
-        self.member_prefixes = ''
+        self.member_prefixes: Dict[str, str] = {}
+        self.channel_modes: Dict[str, str] = {}
         self.name = config['server']
         self.nick = self._config['nick']
         self.channels: Dict[str, Channel] = dict()
@@ -261,10 +262,7 @@ class IRCClient:
             except KeyError:
                 pass
             else:
-                if prefix == '':
-                    self.member_prefixes = ''
-                else:
-                    _, self.member_prefixes = prefix.split(')')
+                self.member_prefixes = parse_member_prefixes(prefix)
 
             try:
                 network = self.supported['NETWORK']
@@ -273,6 +271,13 @@ class IRCClient:
             else:
                 if network:
                     self.name = network
+
+            try:
+                chanmodes = self.supported['CHANMODES']
+            except KeyError:
+                pass
+            else:
+                self.channel_modes = parse_chanmodes(chanmodes)
 
             return []
 
@@ -303,8 +308,8 @@ class IRCClient:
 
             def _member_from_nick(nick: str) -> Member:
                 i = 0
-                for i, letter in enumerate(nick):
-                    if letter not in self.member_prefixes:
+                for i, symbol in enumerate(nick):
+                    if symbol not in self.member_prefixes.values():
                         break
                 prefixes = nick[:i]
                 nick = nick[i:]
@@ -398,6 +403,64 @@ class IRCClient:
 
         return rv
 
+    def _process_mode_message(self, msg: Message):
+        rv = []
+        target, modestring, *args = msg.params
+
+        def _iter_modestring(is_channel: bool):
+            is_add = True
+            args_i = 0
+            for m in modestring:
+                if m == '+':
+                    is_add = True
+                elif m == '-':
+                    is_add = False
+                elif not is_channel:
+                    yield is_add, m, None
+                elif m in self.member_prefixes:
+                    yield is_add, m, args[args_i]
+                    args_i += 1
+                elif self.channel_modes[m] in ('A', 'B'):
+                    yield is_add, m, args[args_i]
+                    args_i += 1
+                elif self.channel_modes[m] == 'C' and is_add:
+                    yield is_add, m, args[args_i]
+                    args_i += 1
+                else:
+                    yield is_add, m, None
+
+        if target in self.channels:
+            channel = self.channels[target]
+            for is_add, mode, arg in _iter_modestring(True):
+                if mode in self.member_prefixes:
+                    if is_add:
+                        channel.members[arg].prefixes += self.member_prefixes[mode]
+                    else:
+                        channel.members[arg].prefixes.replace(self.member_prefixes[mode], '')
+                    rv.append(ChannelNamesEvent(
+                        channel=channel.name,
+                        nicks=[],
+                        **msg.__dict__
+                    ))
+                else:
+                    if is_add and mode not in channel.modes:
+                        channel.modes += mode
+                    else:
+                        channel.modes.replace(mode, '')
+
+        elif target in self.users:
+            user = self.users[target]
+            for is_add, mode, _ in _iter_modestring(False):
+                if is_add:
+                    user.modes += mode
+                else:
+                    user.modes.replace(mode, '')
+
+        else:
+            logger.warning('Received a MODE message for a target that does not exist')
+
+        return rv
+
     def _process_332_message(self, msg: Message):
         channel_name, topic = msg.params[1], msg.params[2]
         try:
@@ -412,10 +475,11 @@ class IRCClient:
 
         Equivalent to ORDER BY prefix, nick.
         """
+        member_prefixes_symbols = list(self.member_prefixes.values())
         return sorted(
             members,
             key=lambda m: (
-                [str(self.member_prefixes.index(c)) for c in m.prefixes] or ['z']
+                [str(member_prefixes_symbols.index(c)) for c in m.prefixes] or ['z']
                 + list(m.user.source.nick.lower())
             )
         )
@@ -560,3 +624,27 @@ def parse_supported(params: List[str]) -> Tuple[Dict[str, str], Set[str]]:
             supported[key] = value
 
     return supported, not_supported
+
+
+def parse_member_prefixes(prefixes: str) -> Dict[str, str]:
+    rv = dict()
+    if prefixes == '':
+        return rv
+
+    letters, symbols = prefixes.split(')')
+    letters = letters[1:]
+    for key, value in zip(letters, symbols):
+        rv[key] = value
+    return rv
+
+
+def parse_chanmodes(chanmodes: str) -> Dict[str, str]:
+    rv = dict()
+    mode_types = 'ABCDEFGHIJKLM'
+    mode_type_i = 0
+    for mode in chanmodes:
+        if mode == ',':
+            mode_type_i += 1
+        else:
+            rv[mode] = mode_types[mode_type_i]
+    return rv
