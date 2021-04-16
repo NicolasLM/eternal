@@ -4,8 +4,8 @@ import sys
 
 import urwid
 
-from airc import IRCClientProtocol
-from ui import UI, palette
+from .airc import IRCClientProtocol
+from .ui import UI, palette
 
 
 async def init(irc_connection_config: dict, ui: UI):

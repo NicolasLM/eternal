@@ -1,0 +1,5 @@
+.pytest_cache
+build
+dist
+eternal.egg-info
+eternal/version.py

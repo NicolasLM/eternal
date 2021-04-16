@@ -7,8 +7,7 @@ from typing import List, Optional, Tuple
 import urwid
 import urwid_readline
 
-import libirc
-import airc
+from . import libirc, airc
 
 
 palette = [

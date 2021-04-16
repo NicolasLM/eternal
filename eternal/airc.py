@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from logging import getLogger
 from typing import Optional
 
-import libirc
+from . import libirc
 
 
 logger = getLogger(__name__)

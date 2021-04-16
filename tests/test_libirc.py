@@ -1,4 +1,4 @@
-from libirc import (
+from eternal.libirc import (
     parse_message, parse_received, parse_message_tags, parse_message_params,
     parse_message_source, Source, parse_capabilities_ls, get_sasl_plain_payload,
     Message, IRCClient, Member, User, parse_supported, parse_chanmodes,

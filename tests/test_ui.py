@@ -1,6 +1,6 @@
 import urwid
 
-import ui
+from eternal import ui
 
 
 def test_convert_formatting():
