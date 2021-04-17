@@ -86,13 +86,18 @@ class Channel:
             self._members_pile_widget = list()
             try:
                 members = self.connection.irc.channels[self.name].members.values()
+                modes = self.connection.irc.channels[self.name].modes
             except KeyError:
                 members = []
+                modes = ''
 
             members = self.connection.irc.sort_members_by_prefix(members)
 
+            header_str = str(len(members))
+            if modes:
+                header_str = f'{modes} - {header_str}'
             self._members_pile_widget = [
-                (urwid.Text(str(len(members)), align='right'), ('pack', None))
+                (urwid.Text(header_str, align='right'), ('pack', None))
             ]
             self._members_pile_widget.extend([
                 (urwid.Text((nick_color(m.user.source.nick), m.prefixes + m.user.source.nick)), ('pack', None))
@@ -348,6 +353,11 @@ class UI:
                 channel.members_updated = True
                 self._render_members()
                 self._update_content()
+
+            elif isinstance(msg, libirc.ChannelModeEvent):
+                channel = self._get_channel_by_name(connection, msg.channel)
+                channel.members_updated = True
+                self._render_members()
 
             elif isinstance(msg, libirc.NewMessageFromServerEvent):
                 channel = self._get_channel_by_name(connection, None)

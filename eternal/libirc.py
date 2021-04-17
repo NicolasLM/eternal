@@ -187,6 +187,13 @@ class ChannelNamesEvent(Message):
 
 
 @dataclass
+class ChannelModeEvent(Message):
+    """Information about modes of a channel."""
+    channel: str = ''
+    modes: str = ''
+
+
+@dataclass
 class ConnectionClosedEvent:
     """Channel topic."""
 
@@ -357,14 +364,18 @@ class IRCClient:
         return [ClientMessage(command='PONG', params=msg.params)]
 
     def _process_join_message(self, msg: Message):
+        rv = []
         channel_name = msg.params[0]
         if msg.source.nick == self.nick and channel_name not in self.channels:
             self.channels[channel_name] = Channel(name=channel_name)
+            # Automatically fetch the modes of the channel after joining
+            rv.append(ClientMessage(command='MODE', params=[channel_name]))
 
         user = self.users[msg.source.nick]
         self.channels[channel_name].members[user.source.nick] = Member(user)
 
-        return [ChannelJoinedEvent(channel=channel_name, user=user, **msg.__dict__)]
+        rv.append(ChannelJoinedEvent(channel=channel_name, user=user, **msg.__dict__))
+        return rv
 
     def _process_part_message(self, msg: Message):
         channel_name = msg.params[0]
@@ -444,20 +455,34 @@ class IRCClient:
             channel = self.channels[target]
             for is_add, mode, arg in self._iter_modestring(modestring, args, True):
                 if mode in self.member_prefixes:
+                    # The mode change is about a channel member
+                    prefix = self.member_prefixes[mode]
                     if is_add:
-                        channel.members[arg].prefixes += self.member_prefixes[mode]
+                        # Add prefix to the channel member if he doesn't already have it
+                        if prefix not in channel.members[arg].prefixes:
+                            channel.members[arg].prefixes += prefix
                     else:
-                        channel.members[arg].prefixes.replace(self.member_prefixes[mode], '')
+                        # Remove prefix from the channel member
+                        channel.members[arg].prefixes = channel.members[arg].prefixes.replace(prefix, '')
                     rv.append(ChannelNamesEvent(
                         channel=channel.name,
                         nicks=[],
                         **msg.__dict__
                     ))
                 else:
+                    # The mode change is about a channel
                     if is_add and mode not in channel.modes:
-                        channel.modes += mode
+                        # Add mode to the channel if it doesn't already have it
+                        if mode not in channel.modes:
+                            channel.modes += mode
                     else:
-                        channel.modes.replace(mode, '')
+                        # Remove mode from the channel
+                        channel.modes = channel.modes.replace(mode, '')
+                    rv.append(ChannelModeEvent(
+                        channel=channel.name,
+                        modes=channel.modes,
+                        **msg.__dict__
+                    ))
 
         elif target in self.users:
             user = self.users[target]
@@ -476,6 +501,22 @@ class IRCClient:
         """RPL_UMODEIS gives the current modes of the connected client."""
         self.users[msg.params[0]].modes = msg.params[1][1:]
         return []
+
+    def _process_324_message(self, msg: Message):
+        """RPL_CHANNELMODEIS gives the current modes of a channel."""
+        _, channel_name, modestring, *args = msg.params
+        try:
+            channel = self.channels[channel_name]
+        except KeyError:
+            return []
+
+        # Note: this discards the mode arguments
+        modes = ''.join([
+            mode for is_add, mode, arg in self._iter_modestring(modestring, args, is_channel=True)
+            if is_add is True
+        ])
+        channel.modes = modes
+        return [ChannelModeEvent(channel=channel_name, modes=modes, **msg.__dict__)]
 
     def _process_332_message(self, msg: Message):
         channel_name, topic = msg.params[1], msg.params[2]
