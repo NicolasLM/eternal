@@ -126,6 +126,15 @@ class ChannelPartEvent(Message):
 
 
 @dataclass
+class ChannelKickEvent(Message):
+    """Someone kicked someone out of a channel."""
+    channel: str = ''
+    user: User = field(default_factory=User)
+    kicked_nick: str = ''
+    reason: str = ''
+
+
+@dataclass
 class QuitEvent(Message):
     """Someone disconnected from the server."""
     channel: str = ''
@@ -382,6 +391,22 @@ class IRCClient:
                 ))
 
         return rv
+
+    def _process_kick_message(self, msg: Message):
+        channel_name = msg.params[0]
+        kicked_nick = msg.params[1]
+        reason = msg.params[2]
+        if kicked_nick == self.nick and channel_name in self.channels:
+            del self.channels[channel_name]
+        else:
+            self.channels[channel_name].members.pop(kicked_nick)
+
+        user = self.users[msg.source.nick]
+
+        return [ChannelKickEvent(
+            channel=channel_name, user=user, kicked_nick=kicked_nick,
+            reason=reason, **msg.__dict__
+        )]
 
     def _process_nick_message(self, msg: Message):
         old_nick = msg.source.nick

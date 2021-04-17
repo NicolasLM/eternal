@@ -287,11 +287,11 @@ class UI:
         return self._channels[self._current]
 
     def _channel_member_update(self, msg: libirc.Message, time: str,
-                               connection: airc.IRCClientProtocol, texts: list) -> Channel:
+                               connection: airc.IRCClientProtocol, texts: list, always_show=False) -> Channel:
         channel = self._get_channel_by_name(connection, msg.channel)
         channel.members_updated = True
         self._render_members()
-        if msg.user.is_recently_active:
+        if msg.user.is_recently_active or always_show:
             channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(msg.source)), str(msg.source))] + texts))
             self._update_content()
         return channel
@@ -312,6 +312,9 @@ class UI:
                 channel = self._channel_member_update(msg, time, connection, [f' left {msg.channel}'])
                 if msg.channel not in connection.irc.channels:
                     self.remove_channel(channel)
+
+            elif isinstance(msg, libirc.ChannelKickEvent):
+                self._channel_member_update(msg, time, connection, [' kicked ', (nick_color(str(msg.kicked_nick)), str(msg.kicked_nick)), ': ', msg.reason], always_show=True)
 
             elif isinstance(msg, libirc.NickChangedEvent):
                 self._channel_member_update(msg, time, connection, [' is now known as ', (nick_color(str(msg.new_nick)), str(msg.new_nick))])
