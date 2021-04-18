@@ -100,8 +100,8 @@ class Channel:
                 (urwid.Text(header_str, align='right'), ('pack', None))
             ]
             self._members_pile_widget.extend([
-                (urwid.Text((nick_color(m.user.source.nick), m.prefixes + m.user.source.nick)), ('pack', None))
-                for m in islice(members, 64)
+                (urwid.Text((nick_color(m.user.source.nick), m.prefixes + m.user.source.nick), align='right' if m.user.is_away else 'left'), ('pack', None))
+                for m in islice(members, 128)
             ])
             self.members_updated = False
 
@@ -326,6 +326,12 @@ class UI:
 
             elif isinstance(msg, libirc.QuitEvent):
                 self._channel_member_update(msg, time, connection, [f' quit: {msg.reason}'])
+
+            elif isinstance(msg, libirc.GoneAwayEvent):
+                self._channel_member_update(msg, time, connection, [f' has gone away: {msg.away_message}'])
+
+            elif isinstance(msg, libirc.BackFromAwayEvent):
+                self._channel_member_update(msg, time, connection, [f' is back'])
 
             elif isinstance(msg, libirc.NewMessageEvent):
                 if msg.channel == '*':

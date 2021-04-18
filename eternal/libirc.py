@@ -143,6 +143,21 @@ class QuitEvent(Message):
 
 
 @dataclass
+class GoneAwayEvent(Message):
+    """Someone is gone AFK."""
+    channel: str = ''
+    user: User = field(default_factory=User)
+    away_message: str = ''
+
+
+@dataclass
+class BackFromAwayEvent(Message):
+    """Someone is back from being AFK."""
+    channel: str = ''
+    user: User = field(default_factory=User)
+
+
+@dataclass
 class NickChangedEvent(Message):
     """A user changed its nick."""
     channel: str = ''
@@ -371,6 +386,13 @@ class IRCClient:
             # Automatically fetch the modes of the channel after joining
             rv.append(ClientMessage(command='MODE', params=[channel_name]))
 
+            # Automatically fetch extra info about members after joining
+            # as recommended by the away-notify extension.
+            # Only if the server sends away updates in real time, otherwise
+            # it requires polling WHO, which makes no sense.
+            if 'away-notify' in self.capabilities:
+                rv.append(ClientMessage(command='WHO', params=[channel_name]))
+
         user = self.users[msg.source.nick]
         self.channels[channel_name].members[user.source.nick] = Member(user)
 
@@ -394,12 +416,48 @@ class IRCClient:
         for channel in self.channels.values():
             member = channel.members.pop(msg.source.nick, None)
             if member is not None:
+
+                # Reset the away status of the user
+                member.user.is_away = False
+
                 rv.append(QuitEvent(
                     channel=channel.name,
                     user=member.user,
                     reason=msg.params[0],
                     **msg.__dict__
                 ))
+
+        return rv
+
+    def _process_away_message(self, msg: Message):
+        # Generate an individual away event for each channel a user is in
+        try:
+            away_message = msg.params[0]
+        except IndexError:
+            # No message means that the user is back from being away
+            away_message = None
+            is_away = False
+        else:
+            is_away = True
+
+        rv = list()
+        self.users[msg.source.nick].is_away = is_away
+        for channel in self.channels.values():
+            member = channel.members.get(msg.source.nick)
+            if member is not None:
+                if is_away:
+                    rv.append(GoneAwayEvent(
+                        channel=channel.name,
+                        user=member.user,
+                        away_message=away_message,
+                        **msg.__dict__
+                    ))
+                else:
+                    rv.append(BackFromAwayEvent(
+                        channel=channel.name,
+                        user=member.user,
+                        **msg.__dict__
+                    ))
 
         return rv
 
@@ -535,6 +593,33 @@ class IRCClient:
             set_at=datetime.fromtimestamp(int(date), tz=timezone.utc),
             **msg.__dict__
         )]
+
+    def _process_352_message(self, msg: Message):
+        """RPL_WHOREPLY response after a WHO, containing information about a user."""
+        channel_name = msg.params[1]
+        nick = msg.params[5]
+        is_away = msg.params[6] == 'G'
+
+        # Only process the reply to WHO when it is about a known channel and
+        # away status is tracked.
+        # This is because WHO can be used interactively to query other information
+        # than the away status used here.
+        if 'away-notify' in self.capabilities and channel_name not in self.channels:
+            return msg
+
+        self.users[nick].is_away = is_away
+        return []
+
+    def _process_315_message(self, msg: Message):
+        """RPL_ENDOFWHO indicates that the WHO command is complete."""
+        # This is a shortcut to notify the UI to refresh the list of channel
+        # members and their away status after receiving the WHO response from joining
+        # a channel.
+        channel_name = msg.params[1]
+        if 'away-notify' in self.capabilities and channel_name not in self.channels:
+            return msg
+
+        return [ChannelNamesEvent(channel=channel_name, nicks=[], **msg.__dict__)]
 
     def sort_members_by_prefix(self, members: Iterable[Member]) -> List[Member]:
         """Sort members of a channel.

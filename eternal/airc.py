@@ -105,6 +105,9 @@ class IRCClientProtocol(asyncio.Protocol):
         if 'batch' in self.irc.capabilities:
             self.send_to_server('CAP REQ :batch')
 
+        if 'away-notify' in self.irc.capabilities:
+            self.send_to_server('CAP REQ :away-notify')
+
         self.send_to_server('CAP END')
 
         for channel in self._config.get('channels', []):
