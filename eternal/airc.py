@@ -81,17 +81,33 @@ class IRCClientProtocol(asyncio.Protocol):
             self.send_to_server('CAP LS 302')
             self.send_to_server(f'NICK {self._config["nick"]}')
             self.send_to_server(f'USER {self._config["user"]} 0 * :{self._config["real_name"]}')
+
+            # Wait for all capabilities to have been received
             while True:
                 msg: libirc.Message = await sub.get()
-                if msg.command == 'CAP' and msg.params[1] == 'LS' and len(msg.params) == 3:
+                if msg.command == 'CAP' and len(msg.params) == 3 and msg.params[1] == 'LS':
                     break
 
         sasl_config = self._config.get('sasl')
         if sasl_config and 'sasl' in self.irc.capabilities:
-            self.send_to_server('CAP REQ :sasl')
-            self.send_to_server('AUTHENTICATE PLAIN')
-            payload = libirc.get_sasl_plain_payload(sasl_config['user'], sasl_config['password'])
-            self.send_to_server(f'AUTHENTICATE {payload}')
+            with self.hub.subscribe() as sub:
+                self.send_to_server('CAP REQ :sasl')
+                self.send_to_server('AUTHENTICATE PLAIN')
+
+                # Wait for "AUTHENTICATE +" from the server
+                while True:
+                    msg: libirc.Message = await sub.get()
+                    if msg.command == 'AUTHENTICATE' and len(msg.params) == 1 and msg.params[0] == '+':
+                        break
+
+                payload = libirc.get_sasl_plain_payload(sasl_config['user'], sasl_config['password'])
+                self.send_to_server(f'AUTHENTICATE {payload}')
+
+                # Wait for 903 "RPL_SASLSUCCESS" from the server
+                while True:
+                    msg: libirc.Message = await sub.get()
+                    if msg.command == '903':
+                        break
 
         if 'message-tags' in self.irc.capabilities:
             self.send_to_server('CAP REQ :message-tags')
@@ -108,7 +124,14 @@ class IRCClientProtocol(asyncio.Protocol):
         if 'away-notify' in self.irc.capabilities:
             self.send_to_server('CAP REQ :away-notify')
 
-        self.send_to_server('CAP END')
+        with self.hub.subscribe() as sub:
+            self.send_to_server('CAP END')
+
+            # Wait for 001 from the server before joining channels
+            while True:
+                msg: libirc.Message = await sub.get()
+                if msg.command == '001':
+                    break
 
         for channel in self._config.get('channels', []):
             self.send_to_server(f'JOIN {channel}')
