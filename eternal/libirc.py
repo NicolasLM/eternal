@@ -430,7 +430,12 @@ class IRCClient:
         return rv
 
     def _process_away_message(self, msg: Message):
-        # Generate an individual away event for each channel a user is in
+        """Process away notify message from the away-notify cap.
+
+        Some IRCd may not send away notification for the current user, but even
+        when the cap is enabled, 305 and 306 are still sent for the current
+        user goes away/comes back.
+        """
         try:
             away_message = msg.params[0]
         except IndexError:
@@ -440,10 +445,33 @@ class IRCClient:
         else:
             is_away = True
 
+        return self._generate_away_events(msg, msg.source.nick, is_away, away_message)
+
+    def _process_305_message(self, msg: Message):
+        """RPL_UNAWAY
+
+        Sent only when the current user comes back, not other channel members.
+        """
+        return self._generate_away_events(msg, self.nick, False, None)
+
+    def _process_306_message(self, msg: Message):
+        """RPL_NOWAWAY
+
+        Sent only when the current user goes away, not other channel members.
+        """
+        return self._generate_away_events(msg, self.nick, True, '')
+
+    def _generate_away_events(self, msg: Message, nick: str, is_away: bool, away_message: Optional[str]):
+        # Generate an individual away event for each channel a user is in
         rv = list()
-        self.users[msg.source.nick].is_away = is_away
+
+        # Do not generate events if the user did not actually change status
+        if self.users[nick].is_away == is_away:
+            return rv
+
+        self.users[nick].is_away = is_away
         for channel in self.channels.values():
-            member = channel.members.get(msg.source.nick)
+            member = channel.members.get(nick)
             if member is not None:
                 if is_away:
                     rv.append(GoneAwayEvent(
