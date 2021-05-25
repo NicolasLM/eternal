@@ -1,11 +1,14 @@
 import asyncio
 import json
+from logging import getLogger
 import sys
 
 import urwid
 
 from .airc import IRCClientProtocol
 from .ui import UI, palette
+
+logger = getLogger(__name__)
 
 
 async def init(irc_connection_config: dict, ui: UI):
@@ -39,7 +42,13 @@ def main():
             irc_connection_config = json.load(f)
         loop.create_task(init(irc_connection_config, ui))
 
-    urwid_main_loop.run()
+    try:
+        urwid_main_loop.run()
+    except Exception:
+        logger.exception('Unexpected error')
+        raise
+    else:
+        logger.info('Terminating eternal')
 
 
 if __name__ == '__main__':
