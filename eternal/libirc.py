@@ -72,6 +72,8 @@ class Member:
     """Represent a user in a specific channel."""
     user: User = field(default_factory=User)
     prefixes: str = ''
+    is_typing: bool = False
+    last_typing_update_at: Optional[datetime] = None
 
 
 @dataclass
@@ -209,6 +211,12 @@ class ChannelModeEvent(Message):
 
 
 @dataclass
+class ChannelTypingEvent(Message):
+    """Information about change of typing status for channel members."""
+    channel: str = ''
+
+
+@dataclass
 class ConnectionClosedEvent:
     """Channel topic."""
 
@@ -218,6 +226,13 @@ class UserDefaultDict(defaultdict):
     def __missing__(self, key: str):
         self[key] = User(source=Source(nick=key))
         return self[key]
+
+
+class TypingStatus(enum.Enum):
+
+    ACTIVE = 'active'
+    PAUSED = 'paused'
+    DONE = 'done'
 
 
 class IRCClient:
@@ -283,8 +298,21 @@ class IRCClient:
                 destination = msg.source.nick or msg.source.host
 
             self.users[msg.source.nick].last_message_at = get_utc_now()
+            rv = [NewMessageEvent(channel=destination, message=msg.params[1], **msg.__dict__)]
 
-            return [NewMessageEvent(channel=destination, message=msg.params[1], **msg.__dict__)]
+            # A client sending a message should reset its typing status
+            try:
+                channel = self.channels[destination]
+                member = channel.members[msg.source.nick]
+            except KeyError:
+                pass
+            else:
+                if member.is_typing:
+                    member.is_typing = False
+                    member.last_typing_update_at = None
+                    rv.append(ChannelTypingEvent(channel=destination, **msg.__dict__))
+
+            return rv
 
         if msg.command in ('001', '002', '003', '004'):
             message = ' '.join(msg.params[1:])
@@ -400,15 +428,23 @@ class IRCClient:
         return rv
 
     def _process_part_message(self, msg: Message):
+        rv = []
         channel_name = msg.params[0]
         if msg.source.nick == self.nick and channel_name in self.channels:
             del self.channels[channel_name]
         else:
-            self.channels[channel_name].members.pop(msg.source.nick)
+            member = self.channels[channel_name].members.pop(msg.source.nick)
+
+            # A client parting a channel should reset the typing status
+            if member.is_typing:
+                member.is_typing = False
+                member.last_typing_update_at = None
+                rv.append(ChannelTypingEvent(channel=channel_name, **msg.__dict__))
 
         user = self.users[msg.source.nick]
 
-        return [ChannelPartEvent(channel=channel_name, user=user, **msg.__dict__)]
+        rv.append(ChannelPartEvent(channel=channel_name, user=user, **msg.__dict__))
+        return rv
 
     def _process_quit_message(self, msg: Message):
         # Generate an individual quit event for each channel a user was in
@@ -419,6 +455,12 @@ class IRCClient:
 
                 # Reset the away status of the user
                 member.user.is_away = False
+
+                # A client parting a channel should reset the typing status
+                if member.is_typing:
+                    member.is_typing = False
+                    member.last_typing_update_at = None
+                    rv.append(ChannelTypingEvent(channel=channel.name, **msg.__dict__))
 
                 rv.append(QuitEvent(
                     channel=channel.name,
@@ -648,6 +690,133 @@ class IRCClient:
             return msg
 
         return [ChannelNamesEvent(channel=channel_name, nicks=[], **msg.__dict__)]
+
+    def _process_tagmsg_message(self, msg: Message):
+        """TAGMSG is a tag-only message that provides context.
+
+        Used most notably for "typing..." notifications.
+        """
+        if '+typing' in msg.tags:
+            try:
+                typing_status = TypingStatus(msg.tags['+typing'])
+            except KeyError:
+                logger.warning('Received unknown typing status "%s"', msg.tags['+typing'])
+                return []
+
+            try:
+                channel_name = msg.params[0]
+            except IndexError:
+                logger.warning('Received a typing status without a target channel')
+                return []
+
+            try:
+                channel = self.channels[channel_name]
+            except KeyError:
+                logger.warning('Received a typing status for an unknown target "%s"', channel_name)
+                return []
+
+            try:
+                member = channel.members[msg.source.nick]
+            except KeyError:
+                logger.warning('Received a typing status for an unknown member "%s" of "%s"', msg.source.nick, channel_name)
+                return []
+
+            previous_typing_status = member.is_typing
+            if typing_status is TypingStatus.ACTIVE:
+                # TODO: add a task that would remove the active status if it
+                # did not change for 6 seconds, according to spec.
+                # As is stands currently, someone that stops typing indefinitely
+                # stays in typing status.
+                member.is_typing = True
+                member.last_typing_update_at = get_utc_now()
+            else:
+                member.is_typing = False
+                member.last_typing_update_at = None
+
+            if previous_typing_status != member.is_typing:
+                return [ChannelTypingEvent(channel=channel_name, **msg.__dict__)]
+
+            return []
+
+        return []
+
+    def should_send_active_typing_update(self, channel_name: str) -> bool:
+        """Tell whether sending an active typing update is warranted."""
+        if 'message-tags' not in self.capabilities:
+            return False
+
+        try:
+            channel = self.channels[channel_name]
+        except KeyError:
+            return False
+
+        try:
+            member = channel.members[self.nick]
+        except KeyError:
+            logger.warning('Nick of current user "%s" is not a member of channel "%s"', self.nick, channel_name)
+            return False
+
+        if not member.is_typing:
+            return True
+
+        if member.last_typing_update_at is None:
+            logger.warning('Inconsistent state, member "%s" of channel "%s" should have "last_typing_update_at" set', self.nick, channel_name)
+            return True
+
+        if member.last_typing_update_at + timedelta(seconds=3) < get_utc_now():
+            return True
+
+        return False
+
+    def should_send_done_typing_update(self, channel_name: str) -> bool:
+        """Tell whether cancelling a typing indication is warranted."""
+        if 'message-tags' not in self.capabilities:
+            return False
+
+        try:
+            channel = self.channels[channel_name]
+        except KeyError:
+            return False
+
+        try:
+            member = channel.members[self.nick]
+        except KeyError:
+            logger.warning('Nick of current user "%s" is not a member of channel "%s"', self.nick, channel_name)
+            return False
+
+        return member.is_typing
+
+    def mark_sent_active_typing_update(self, channel_name: str):
+        """Register that a typing indication for the current user on a channel was sent."""
+        try:
+            channel = self.channels[channel_name]
+        except KeyError:
+            return
+
+        try:
+            member = channel.members[self.nick]
+        except KeyError:
+            logger.warning('Nick of current user "%s" is not a member of channel "%s"', self.nick, channel_name)
+            return
+
+        member.is_typing = True
+        member.last_typing_update_at = get_utc_now()
+
+    def mark_sent_done_typing_update(self, channel_name: str):
+        """Reset typing indication for current user on a channel."""
+        try:
+            channel = self.channels[channel_name]
+        except KeyError:
+            return
+
+        try:
+            member = channel.members[self.nick]
+        except KeyError:
+            logger.warning('Nick of current user "%s" is not a member of channel "%s"', self.nick, channel_name)
+            return
+
+        member.is_typing = False
+        member.last_typing_update_at = None
 
     def sort_members_by_prefix(self, members: Iterable[Member]) -> List[Member]:
         """Sort members of a channel.

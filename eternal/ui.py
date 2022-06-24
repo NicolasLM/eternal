@@ -2,7 +2,7 @@ from datetime import datetime
 from itertools import islice
 import hashlib
 import re
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import urwid
 import urwid_readline
@@ -71,6 +71,8 @@ def nick_color(nick: str) -> str:
 
 class Channel:
 
+    NUM_TYPING_LIMIT: int = 6
+
     def __init__(self, name: str, connection: airc.IRCClientProtocol):
         self.name = name
         self.connection = connection
@@ -107,6 +109,40 @@ class Channel:
 
         return self._members_pile_widget
 
+    def get_status_line_content(self) -> Union[str, List]:
+        try:
+            members = self.connection.irc.channels[self.name].members.values()
+        except KeyError:
+            return ''
+
+        nicks = [m.user.source.nick for m in members if m.is_typing]
+        nicks = [n for n in nicks if n != self.connection.irc.nick]
+        nicks = [(nick_color(nick), nick) for nick in sorted(nicks)]
+        num_typing = len(nicks)
+        if num_typing == 0:
+            return ''
+
+        if num_typing == 1:
+            return [nicks[0], ' is typing...']
+
+        rv = []
+        for i, nick in enumerate(nicks):
+            rv.append(nick)
+            if i + 1 == self.NUM_TYPING_LIMIT:
+                num_others = num_typing - self.NUM_TYPING_LIMIT
+                if num_others:
+                    rv.append(f' and {num_others} others')
+                break
+            elif i + 2  == num_typing:
+                rv.append(' and ')
+            elif i + 1 == num_typing:
+                pass
+            else:
+                rv.append(', ')
+
+        rv.append(' are typing')
+        return rv
+
 
 class UI:
 
@@ -116,12 +152,16 @@ class UI:
         self._current = 0
         self._channels: List[Channel] = []
         self.chat_content = urwid.ListBox(urwid.SimpleFocusListWalker([]))
+        self.status_line = urwid.Text('')
         self.pile = urwid.Pile([])
         self.members_pile = urwid.Pile([])
 
         columns = urwid.Columns([
             (self.COLUMN_WIDTH, urwid.LineBox(urwid.Filler(self.pile, valign='top'))),
-            self.chat_content,
+            urwid.Frame(
+                body=self.chat_content,
+                footer=self.status_line,
+            ),
             (self.COLUMN_WIDTH, urwid.LineBox(urwid.Filler(self.members_pile, valign='top'))),
         ])
         command_input = CommandEdit(self, ('Bold', "Command "))
@@ -163,6 +203,11 @@ class UI:
 
     def _render_members(self):
         self.members_pile.contents = self.get_current_channel().get_members_pile_widgets()
+        self._render_status_line()
+
+    def _render_status_line(self):
+        markup = self.get_current_channel().get_status_line_content()
+        self.status_line.set_text(markup)
 
     def add_channel(self, channel: Channel):
         # Find the position after the last channel of the same connection
@@ -365,6 +410,10 @@ class UI:
                 channel.members_updated = True
                 self._render_members()
 
+            elif isinstance(msg, libirc.ChannelTypingEvent):
+                channel = self._get_channel_by_name(connection, msg.channel)
+                self._render_status_line()
+
             elif isinstance(msg, libirc.NewMessageFromServerEvent):
                 channel = self._get_channel_by_name(connection, None)
                 channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), *convert_formatting(msg.message)]))
@@ -387,7 +436,9 @@ class CommandEdit(urwid_readline.ReadlineEdit):
 
     def keypress(self, size, key):
         if key != 'enter':
-            return super().keypress(size, key)
+            rv = super().keypress(size, key)
+            self._handle_typing_notification()
+            return rv
 
         channel = self.ui.get_current_channel()
         command = self.get_edit_text()
@@ -423,6 +474,22 @@ class CommandEdit(urwid_readline.ReadlineEdit):
                 self.ui._update_content()
 
         self.set_edit_text('')
+
+    def _handle_typing_notification(self):
+        try:
+            channel = self.ui.get_current_channel()
+        except IndexError:
+            return
+
+        command = self.get_edit_text()
+        if command.startswith('/') or command == '':
+            if channel.connection.irc.should_send_done_typing_update(channel.name):
+                channel.connection.send_to_server(f'@+typing=done TAGMSG {channel.name}')
+                channel.connection.irc.mark_sent_done_typing_update(channel.name)
+        else:
+            if channel.connection.irc.should_send_active_typing_update(channel.name):
+                channel.connection.send_to_server(f'@+typing=active TAGMSG {channel.name}')
+                channel.connection.irc.mark_sent_active_typing_update(channel.name)
 
     def _auto_complete(self, text, state):
         channel = self.ui.get_current_channel()
