@@ -122,7 +122,7 @@ def test_sort_members():
     m8 = Member(User(source=Source(nick='abel')), prefixes='')
     members = [m2, m4, m8, m1, m6, m3, m7, m5]
 
-    irc = IRCClient({'nick': 'nick', 'server': 'server'})
+    irc = IRCClient({'nick': 'nick', 'server': 'server'}, None)
     irc.member_prefixes = parse_member_prefixes('(Yqaohv)!~&@%+')
     assert irc.sort_members_by_prefix(members) == [m4, m1, m5, m6, m8, m7, m2, m3]
 

@@ -5,6 +5,7 @@ import sys
 
 import urwid
 
+from .libirc import IRCClient
 from .airc import IRCClientProtocol
 from .ui import UI, palette
 
@@ -14,13 +15,18 @@ logger = getLogger(__name__)
 async def init(irc_connection_config: dict, ui: UI):
     loop = asyncio.get_running_loop()
 
+    #: Queue where parsed messages received from the IRC server are placed
+    inbox = asyncio.Queue()
+
+    irc_client = IRCClient(irc_connection_config, inbox)
     transport, protocol = await loop.create_connection(
-        lambda: IRCClientProtocol(loop, irc_connection_config),
+        lambda: IRCClientProtocol(loop, irc_connection_config, irc_client),
         irc_connection_config['server'],
         irc_connection_config['port'],
         ssl=irc_connection_config['ssl']
     )
-    await ui.add_connection(protocol)
+    irc_client.notify_connection_established(protocol)
+    await ui.add_irc_client(irc_client)
 
 
 def main():

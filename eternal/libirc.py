@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 import enum
 import logging
-from typing import List, Dict, Union, Iterable, Optional, Tuple, Set
+from typing import List, Dict, Union, Iterable, Optional, Tuple, Set, Callable
 
 
 logger = logging.getLogger(__name__)
@@ -218,7 +218,10 @@ class ChannelTypingEvent(Message):
 
 @dataclass
 class ConnectionClosedEvent:
-    """Channel topic."""
+    """Connection to the remote server is closed.
+
+    Upon receiving this event, the IRCClient instance must be dropped.
+    """
 
 
 class UserDefaultDict(defaultdict):
@@ -237,8 +240,10 @@ class TypingStatus(enum.Enum):
 
 class IRCClient:
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, inbox):
         self._config = config
+        self._server_connection = None
+        self.inbox = inbox
 
         self.capabilities: Dict[str, Union[bool, str]] = {}
         self.supported: Dict[str, str] = {}
@@ -253,12 +258,47 @@ class IRCClient:
         self._tmp_channel_nicks: Dict[str, List[str]] = defaultdict(list)
         self._tmp_batches: Dict[str, List[Message]] = dict()
         self._tmp_motd: List[str] = list()
+        self._handshake_steps: List[Tuple[Callable, Callable]] = list()
+
+    def notify_connection_established(self, server_connection):
+        """Call this when the connection to the remote server has been established."""
+        self._server_connection = server_connection
+        self._hanshake_start()
+
+    def notify_connection_closed(self):
+        """Call this when the remote server closed the connection."""
+        self.inbox.put_nowait(ConnectionClosedEvent())
+
+    def send_to_server(self, line: str):
+        payload = line.encode() + b'\r\n'
+        with open('/tmp/received.log', mode='ab') as f:
+            f.write(payload)
+        self._server_connection.send_bytes(payload)
+
+    def send_message_to_server(self, msg: ClientMessage):
+        payload = msg.to_bytes() + b'\r\n'
+        with open('/tmp/received.log', mode='ab') as f:
+            f.write(payload)
+        self._server_connection.send_bytes(payload)
 
     def add_received_data(self, data: bytes):
+        """Call this with the data received from the remote server."""
         self._recv_buffer.extend(data)
+
+        # The receive buffer may contain multiple messages to parse
         for msg in parse_received(self._recv_buffer):
+
+            # Each parsed message, once processed may result in multiple
+            # events being generated.
             for processed_msg in self._process_message(msg):
-                yield processed_msg
+                self.inbox.put_nowait(processed_msg)
+
+                if self._handshake_steps:
+                    for handshake_step in self._handshake_steps.copy():
+                        step_fence, step = handshake_step
+                        if step_fence(msg):
+                            self._handshake_steps.remove(handshake_step)
+                            step()
 
     def _process_message(self, msg: Message) -> List[Message]:
         # Batches allow to put messages on hold and deliver them all at
@@ -404,28 +444,33 @@ class IRCClient:
         return [msg]
 
     def _process_ping_message(self, msg: Message):
-        return [ClientMessage(command='PONG', params=msg.params)]
+        self.send_message_to_server(
+            ClientMessage(command='PONG', params=msg.params)
+        )
+        return []
 
     def _process_join_message(self, msg: Message):
-        rv = []
         channel_name = msg.params[0]
         if msg.source.nick == self.nick and channel_name not in self.channels:
             self.channels[channel_name] = Channel(name=channel_name)
             # Automatically fetch the modes of the channel after joining
-            rv.append(ClientMessage(command='MODE', params=[channel_name]))
+            self.send_message_to_server(
+                ClientMessage(command='MODE', params=[channel_name])
+            )
 
             # Automatically fetch extra info about members after joining
             # as recommended by the away-notify extension.
             # Only if the server sends away updates in real time, otherwise
             # it requires polling WHO, which makes no sense.
             if 'away-notify' in self.capabilities:
-                rv.append(ClientMessage(command='WHO', params=[channel_name]))
+                self.send_message_to_server(
+                    ClientMessage(command='WHO', params=[channel_name])
+                )
 
         user = self.users[msg.source.nick]
         self.channels[channel_name].members[user.source.nick] = Member(user)
 
-        rv.append(ChannelJoinedEvent(channel=channel_name, user=user, **msg.__dict__))
-        return rv
+        return [ChannelJoinedEvent(channel=channel_name, user=user, **msg.__dict__)]
 
     def _process_part_message(self, msg: Message):
         rv = []
@@ -853,6 +898,78 @@ class IRCClient:
                 args_i += 1
             else:
                 yield is_add, m, None
+
+    # Initial connection handshake methods
+    #
+    # This part is hard to read but it is basically a series of
+    # methods called one after the other but with an extra step
+    # waiting for the server to send a specific response before
+    # calling the next method.
+
+    def _hanshake_start(self):
+        def is_capabilities_received(msg: Message):
+            # Wait for all capabilities to be received before authenticating or
+            # negociating capabilities
+            return msg.command == 'CAP' and len(msg.params) == 3 and msg.params[1] == 'LS'
+
+        sasl_config = self._config.get('sasl')
+        if sasl_config and 'sasl' in self.capabilities:
+            next_step = self._handshake_authenticate_step_1
+        else:
+            # No SASL authentication, skip that step
+            next_step = self._handshake_negociate_capabilities
+        self._handshake_steps.append((is_capabilities_received, next_step))
+
+        self.send_to_server('CAP LS 302')
+        self.send_to_server(f'NICK {self._config["nick"]}')
+        self.send_to_server(f'USER {self._config["user"]} 0 * :{self._config["real_name"]}')
+
+    def _handshake_authenticate_step_1(self):
+        def is_authenticate_plus_received(msg: Message):
+            # Wait for "AUTHENTICATE +" from the server
+            return msg.command == 'AUTHENTICATE' and len(msg.params) == 1 and msg.params[0] == '+'
+
+        self._handshake_steps.append((is_authenticate_plus_received, self._handshake_authenticate_step_2))
+        self.send_to_server('CAP REQ :sasl')
+        self.send_to_server('AUTHENTICATE PLAIN')
+
+    def _handshake_authenticate_step_2(self):
+        def is_903_received(msg: Message):
+            # Wait for 903 "RPL_SASLSUCCESS" from the server
+            return msg.command == '903'
+
+        self._handshake_steps.append((is_903_received, self._handshake_negociate_capabilities))
+        sasl_config = self._config.get('sasl')
+        payload = get_sasl_plain_payload(sasl_config['user'], sasl_config['password'])
+        self.send_to_server(f'AUTHENTICATE {payload}')
+
+    def _handshake_negociate_capabilities(self):
+        def is_001_received(msg: Message):
+            # Wait for 001 from the server before joining channels
+            return msg.command == '001'
+
+        self._handshake_steps.append((is_001_received, self._handshake_join_channels))
+
+        if 'message-tags' in self.capabilities:
+            self.send_to_server('CAP REQ :message-tags')
+
+        if 'echo-message' in self.capabilities:
+            self.send_to_server('CAP REQ :echo-message')
+
+        if 'server-time' in self.capabilities:
+            self.send_to_server('CAP REQ :server-time')
+
+        if 'batch' in self.capabilities:
+            self.send_to_server('CAP REQ :batch')
+
+        if 'away-notify' in self.capabilities:
+            self.send_to_server('CAP REQ :away-notify')
+
+        self.send_to_server('CAP END')
+
+    def _handshake_join_channels(self):
+        for channel in self._config.get('channels', []):
+            self.send_to_server(f'JOIN {channel}')
 
 
 def parse_message(data: bytearray) -> Message:

@@ -73,27 +73,27 @@ class Channel:
 
     NUM_TYPING_LIMIT: int = 6
 
-    def __init__(self, name: str, connection: airc.IRCClientProtocol):
+    def __init__(self, name: str, irc: libirc.IRCClient):
         self.name = name
-        self.connection = connection
+        self.irc = irc
         self.list_walker = urwid.SimpleFocusListWalker([])
         self.members_updated = False
         self.has_unread = False
         self.has_notification = False
-        self.is_connection_default = False
+        self.is_client_default = False
         self._members_pile_widget = list()
 
     def get_members_pile_widgets(self) -> list:
         if self.members_updated:
             self._members_pile_widget = list()
             try:
-                members = self.connection.irc.channels[self.name].members.values()
-                modes = self.connection.irc.channels[self.name].modes
+                members = self.irc.channels[self.name].members.values()
+                modes = self.irc.channels[self.name].modes
             except KeyError:
                 members = []
                 modes = ''
 
-            members = self.connection.irc.sort_members_by_prefix(members)
+            members = self.irc.sort_members_by_prefix(members)
 
             header_str = str(len(members))
             if modes:
@@ -111,12 +111,12 @@ class Channel:
 
     def get_status_line_content(self) -> Union[str, List]:
         try:
-            members = self.connection.irc.channels[self.name].members.values()
+            members = self.irc.channels[self.name].members.values()
         except KeyError:
             return ''
 
         nicks = [m.user.source.nick for m in members if m.is_typing]
-        nicks = [n for n in nicks if n != self.connection.irc.nick]
+        nicks = [n for n in nicks if n != self.irc.nick]
         nicks = [(nick_color(nick), nick) for nick in sorted(nicks)]
         num_typing = len(nicks)
         if num_typing == 0:
@@ -167,21 +167,21 @@ class UI:
         command_input = CommandEdit(self, ('Bold', "Command "))
         self.frame = MyFrame(self, body=columns, footer=command_input, focus_part='footer')
 
-    async def add_connection(self, connection: airc.IRCClientProtocol):
-        channel = Channel(connection.irc.name, connection)
-        channel.is_connection_default = True
+    async def add_irc_client(self, irc: libirc.IRCClient):
+        channel = Channel(irc.name, irc)
+        channel.is_client_default = True
         self.add_channel(channel)
-        await self._consume_messages(connection)
+        await self._consume_messages(irc)
 
     def _update_pile(self):
         pile_widgets = list()
         for index, channel in enumerate(self._channels):
 
-            if index > 0 and channel.is_connection_default:
+            if index > 0 and channel.is_client_default:
                 pile_widgets.append((urwid.Text(''), ('pack', None)))
 
-            if channel.is_connection_default:
-                channel.name = channel.connection.irc.name
+            if channel.is_client_default:
+                channel.name = channel.irc.name
                 text = channel.name
             else:
                 text = f' {channel.name}'
@@ -210,10 +210,10 @@ class UI:
         self.status_line.set_text(markup)
 
     def add_channel(self, channel: Channel):
-        # Find the position after the last channel of the same connection
+        # Find the position after the last channel of the same client
         insert_at = len(self._channels)
         for i, c in enumerate(self._channels):
-            if c.connection is channel.connection:
+            if c.irc is channel.irc:
                 insert_at = i + 1
 
         if self._current > insert_at:
@@ -285,10 +285,10 @@ class UI:
         except IndexError:
             return
 
-        if current_c.connection is not previous_c.connection:
+        if current_c.irc is not previous_c.irc:
             return
 
-        if current_c.is_connection_default or previous_c.is_connection_default:
+        if current_c.is_client_default or previous_c.is_client_default:
             return
 
         self._channels[i], self._channels[i-1] = self._channels[i-1], self._channels[i]
@@ -307,29 +307,29 @@ class UI:
         except IndexError:
             return
 
-        if current_c.connection is not next_c.connection:
+        if current_c.irc is not next_c.irc:
             return
 
-        if current_c.is_connection_default or next_c.is_connection_default:
+        if current_c.is_client_default or next_c.is_client_default:
             return
 
         self._channels[i], self._channels[i + 1] = self._channels[i + 1], self._channels[i]
         self._current += 1
         self._update_pile()
 
-    def _get_channel_by_name(self, connection: airc.IRCClientProtocol, name: Optional[str]) -> Channel:
+    def _get_channel_by_name(self, irc: libirc.IRCClient, name: Optional[str]) -> Channel:
         for channel in self._channels:
-            if channel.connection is not connection:
+            if channel.irc is not irc:
                 continue
 
             if channel.name == name:
                 return channel
 
-            if name is None and channel.is_connection_default:
+            if name is None and channel.is_client_default:
                 return channel
 
         # Create channel if it doesn't exist
-        channel = Channel(name, connection)
+        channel = Channel(name, irc)
         self.add_channel(channel)
         return channel
 
@@ -337,8 +337,8 @@ class UI:
         return self._channels[self._current]
 
     def _channel_member_update(self, msg: libirc.Message, time: str,
-                               connection: airc.IRCClientProtocol, texts: list, always_show=False) -> Channel:
-        channel = self._get_channel_by_name(connection, msg.channel)
+                               irc: libirc.IRCClient, texts: list, always_show=False) -> Channel:
+        channel = self._get_channel_by_name(irc, msg.channel)
         channel.members_updated = True
         self._render_members()
         if msg.user.is_recently_active or always_show:
@@ -346,9 +346,9 @@ class UI:
             self._update_content()
         return channel
 
-    async def _consume_messages(self, connection: airc.IRCClientProtocol):
+    async def _consume_messages(self, irc: libirc.IRCClient):
         while True:
-            msg = await connection.inbox.get()
+            msg = await irc.inbox.get()
 
             if isinstance(msg, libirc.ConnectionClosedEvent):
                 raise urwid.ExitMainLoop()
@@ -356,75 +356,75 @@ class UI:
             time = get_local_time(msg.time)
 
             if isinstance(msg, libirc.ChannelJoinedEvent):
-                self._channel_member_update(msg, time, connection, [f' joined {msg.channel}'])
+                self._channel_member_update(msg, time, irc, [f' joined {msg.channel}'])
 
             elif isinstance(msg, libirc.ChannelPartEvent):
-                channel = self._channel_member_update(msg, time, connection, [f' left {msg.channel}'])
-                if msg.channel not in connection.irc.channels:
+                channel = self._channel_member_update(msg, time, irc, [f' left {msg.channel}'])
+                if msg.channel not in irc.channels:
                     self.remove_channel(channel)
 
             elif isinstance(msg, libirc.ChannelKickEvent):
-                self._channel_member_update(msg, time, connection, [' kicked ', (nick_color(str(msg.kicked_nick)), str(msg.kicked_nick)), ': ', msg.reason], always_show=True)
+                self._channel_member_update(msg, time, irc, [' kicked ', (nick_color(str(msg.kicked_nick)), str(msg.kicked_nick)), ': ', msg.reason], always_show=True)
 
             elif isinstance(msg, libirc.NickChangedEvent):
-                self._channel_member_update(msg, time, connection, [' is now known as ', (nick_color(str(msg.new_nick)), str(msg.new_nick))])
+                self._channel_member_update(msg, time, irc, [' is now known as ', (nick_color(str(msg.new_nick)), str(msg.new_nick))])
 
             elif isinstance(msg, libirc.QuitEvent):
-                self._channel_member_update(msg, time, connection, [f' quit: {msg.reason}'])
+                self._channel_member_update(msg, time, irc, [f' quit: {msg.reason}'])
 
             elif isinstance(msg, libirc.GoneAwayEvent):
-                self._channel_member_update(msg, time, connection, [f' has gone away: {msg.away_message}'])
+                self._channel_member_update(msg, time, irc, [f' has gone away: {msg.away_message}'])
 
             elif isinstance(msg, libirc.BackFromAwayEvent):
-                self._channel_member_update(msg, time, connection, [f' is back'])
+                self._channel_member_update(msg, time, irc, [f' is back'])
 
             elif isinstance(msg, libirc.NewMessageEvent):
                 if msg.channel == '*':
-                    channel = self._get_channel_by_name(connection, None)
+                    channel = self._get_channel_by_name(irc, None)
                 else:
-                    channel = self._get_channel_by_name(connection, msg.channel)
-                if connection.irc.nick in msg.message:
+                    channel = self._get_channel_by_name(irc, msg.channel)
+                if irc.nick in msg.message:
                     channel.has_notification = True
                 channel.has_unread = True
                 channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(msg.source)), str(msg.source)), ': ', *convert_formatting(msg.message)]))
                 self._update_content()
 
             elif isinstance(msg, libirc.ChannelTopicEvent):
-                channel = self._get_channel_by_name(connection, msg.channel)
+                channel = self._get_channel_by_name(irc, msg.channel)
                 channel.list_walker.append(urwid.Text(*convert_formatting(msg.topic)))
                 self._update_content()
 
             elif isinstance(msg, libirc.ChannelTopicWhoTimeEvent):
-                channel = self._get_channel_by_name(connection, msg.channel)
+                channel = self._get_channel_by_name(irc, msg.channel)
                 channel.list_walker.append(urwid.Text(['Set by ', (nick_color(str(msg.set_by)), str(msg.set_by)), f' on {get_local_date(msg.set_at)}']))
                 self._update_content()
 
             elif isinstance(msg, libirc.ChannelNamesEvent):
-                channel = self._get_channel_by_name(connection, msg.channel)
+                channel = self._get_channel_by_name(irc, msg.channel)
                 channel.members_updated = True
                 self._render_members()
                 self._update_content()
 
             elif isinstance(msg, libirc.ChannelModeEvent):
-                channel = self._get_channel_by_name(connection, msg.channel)
+                channel = self._get_channel_by_name(irc, msg.channel)
                 channel.members_updated = True
                 self._render_members()
 
             elif isinstance(msg, libirc.ChannelTypingEvent):
-                channel = self._get_channel_by_name(connection, msg.channel)
+                channel = self._get_channel_by_name(irc, msg.channel)
                 self._render_status_line()
 
             elif isinstance(msg, libirc.NewMessageFromServerEvent):
-                channel = self._get_channel_by_name(connection, None)
+                channel = self._get_channel_by_name(irc, None)
                 channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), *convert_formatting(msg.message)]))
                 self._update_content()
 
             else:
-                channel = self._get_channel_by_name(connection, None)
+                channel = self._get_channel_by_name(irc, None)
                 channel.list_walker.append(urwid.Text(msg.command + ' ' + ' '.join(msg.params)))
                 self._update_content()
 
-            connection.inbox.task_done()
+            irc.inbox.task_done()
 
 
 class CommandEdit(urwid_readline.ReadlineEdit):
@@ -449,27 +449,27 @@ class CommandEdit(urwid_readline.ReadlineEdit):
         elif command == '/close':
             self.ui.remove_channel(channel)
         elif command == '/part':
-            channel.connection.send_to_server(f'PART {channel.name}')
+            channel.irc.send_to_server(f'PART {channel.name}')
         elif command.startswith('/msg'):
-            connection = channel.connection
+            irc = channel.irc
             _, channel_name, content = command.split(' ', maxsplit=2)
-            connection.send_to_server(f'PRIVMSG {channel_name} :{content}')
+            irc.send_to_server(f'PRIVMSG {channel_name} :{content}')
 
-            if 'echo-message' not in connection.irc.capabilities:
-                channel = self.ui._get_channel_by_name(connection, channel_name)
+            if 'echo-message' not in irc.capabilities:
+                channel = self.ui._get_channel_by_name(irc, channel_name)
                 time = get_local_time(libirc.get_utc_now())
-                source = connection.irc.nick
+                source = irc.nick
                 channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(source)), str(source)), f': {content}']))
                 self.ui._update_content()
 
         elif command.startswith('/'):
-            channel.connection.send_to_server(command[1:])
+            channel.irc.send_to_server(command[1:])
         else:
-            channel.connection.send_to_server(f'PRIVMSG {channel.name} :{command}')
+            channel.irc.send_to_server(f'PRIVMSG {channel.name} :{command}')
 
-            if 'echo-message' not in channel.connection.irc.capabilities:
+            if 'echo-message' not in channel.irc.capabilities:
                 time = get_local_time(libirc.get_utc_now())
-                source = channel.connection.irc.nick
+                source = channel.irc.nick
                 channel.list_walker.append(urwid.Text([('Light gray', f'{time} '), (nick_color(str(source)), str(source)), f': {command}']))
                 self.ui._update_content()
 
@@ -483,18 +483,18 @@ class CommandEdit(urwid_readline.ReadlineEdit):
 
         command = self.get_edit_text()
         if command.startswith('/') or command == '':
-            if channel.connection.irc.should_send_done_typing_update(channel.name):
-                channel.connection.send_to_server(f'@+typing=done TAGMSG {channel.name}')
-                channel.connection.irc.mark_sent_done_typing_update(channel.name)
+            if channel.irc.should_send_done_typing_update(channel.name):
+                channel.irc.send_to_server(f'@+typing=done TAGMSG {channel.name}')
+                channel.irc.mark_sent_done_typing_update(channel.name)
         else:
-            if channel.connection.irc.should_send_active_typing_update(channel.name):
-                channel.connection.send_to_server(f'@+typing=active TAGMSG {channel.name}')
-                channel.connection.irc.mark_sent_active_typing_update(channel.name)
+            if channel.irc.should_send_active_typing_update(channel.name):
+                channel.irc.send_to_server(f'@+typing=active TAGMSG {channel.name}')
+                channel.irc.mark_sent_active_typing_update(channel.name)
 
     def _auto_complete(self, text, state):
         channel = self.ui.get_current_channel()
         try:
-            candidates = channel.connection.irc.channels[channel.name].members.keys()
+            candidates = channel.irc.channels[channel.name].members.keys()
         except KeyError:
             candidates = list()
         tmp = [c + ', ' for c in candidates if c and c.startswith(text)] if text else candidates
