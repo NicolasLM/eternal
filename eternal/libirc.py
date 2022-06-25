@@ -72,6 +72,7 @@ class Member:
     """Represent a user in a specific channel."""
     user: User = field(default_factory=User)
     prefixes: str = ''
+    highest_prefix: str = ''
     is_typing: bool = False
     last_typing_update_at: Optional[datetime] = None
 
@@ -418,11 +419,13 @@ class IRCClient:
                 for i, symbol in enumerate(nick):
                     if symbol not in self.member_prefixes.values():
                         break
+
                 prefixes = nick[:i]
+                highest_prefix = get_highest_member_prefix(self.member_prefixes, prefixes)
                 nick = nick[i:]
                 user = self.users[nick]
 
-                return Member(user, prefixes=prefixes)
+                return Member(user, prefixes=prefixes, highest_prefix=highest_prefix)
 
             members = [_member_from_nick(nick) for nick in nicks]
             self.channels[channel].members = {
@@ -630,13 +633,16 @@ class IRCClient:
                 if mode in self.member_prefixes:
                     # The mode change is about a channel member
                     prefix = self.member_prefixes[mode]
+                    member = channel.members[arg]
                     if is_add:
                         # Add prefix to the channel member if he doesn't already have it
-                        if prefix not in channel.members[arg].prefixes:
-                            channel.members[arg].prefixes += prefix
+                        if prefix not in member.prefixes:
+                            member.prefixes += prefix
+                            member.highest_prefix = get_highest_member_prefix(self.member_prefixes, member.prefixes)
                     else:
                         # Remove prefix from the channel member
-                        channel.members[arg].prefixes = channel.members[arg].prefixes.replace(prefix, '')
+                        member.prefixes = member.prefixes.replace(prefix, '')
+                        member.highest_prefix = get_highest_member_prefix(self.member_prefixes, member.prefixes)
                     rv.append(ChannelNamesEvent(
                         channel=channel.name,
                         nicks=[],
@@ -950,20 +956,17 @@ class IRCClient:
 
         self._handshake_steps.append((is_001_received, self._handshake_join_channels))
 
-        if 'message-tags' in self.capabilities:
-            self.send_to_server('CAP REQ :message-tags')
-
-        if 'echo-message' in self.capabilities:
-            self.send_to_server('CAP REQ :echo-message')
-
-        if 'server-time' in self.capabilities:
-            self.send_to_server('CAP REQ :server-time')
-
-        if 'batch' in self.capabilities:
-            self.send_to_server('CAP REQ :batch')
-
-        if 'away-notify' in self.capabilities:
-            self.send_to_server('CAP REQ :away-notify')
+        client_supported_capabilities = (
+            'message-tags',
+            'echo-message',
+            'server-time',
+            'batch',
+            'away-notify',
+            'multi-prefix',
+        )
+        for capability in client_supported_capabilities:
+            if capability in self.capabilities:
+                self.send_to_server(f'CAP REQ :{capability}')
 
         self.send_to_server('CAP END')
 
@@ -1123,6 +1126,19 @@ def parse_member_prefixes(prefixes: str) -> Dict[str, str]:
     for key, value in zip(letters, symbols):
         rv[key] = value
     return rv
+
+
+def get_highest_member_prefix(server_prefixes: Dict[str, str], member_prefixes: str) -> str:
+    """Return the most important prefix a member has on a given channel.
+
+    The `server_prefix` dict is expected to be ordered from most to least important.
+    The `member_prefix` string may be unordered.
+    """
+    for server_prefix in server_prefixes.values():
+        if server_prefix in member_prefixes:
+            return server_prefix
+
+    return ''
 
 
 def parse_chanmodes(chanmodes: str) -> Dict[str, str]:

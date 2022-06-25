@@ -2,7 +2,7 @@ from eternal.libirc import (
     parse_message, parse_received, parse_message_tags, parse_message_params,
     parse_message_source, Source, parse_capabilities_ls, get_sasl_plain_payload,
     Message, IRCClient, Member, User, parse_supported, parse_chanmodes,
-    parse_member_prefixes
+    parse_member_prefixes, get_highest_member_prefix
 )
 
 
@@ -131,6 +131,18 @@ def test_parse_member_prefixes():
     assert parse_member_prefixes('') == {}
     assert parse_member_prefixes('(ov)@+') == {'o': '@', 'v': '+'}
     assert parse_member_prefixes('(ohv)@%+') == {'o': '@', 'h': '%', 'v': '+'}
+
+
+def test_get_highest_member_prefix():
+    server_prefixes = {'o': '@', 'h': '%', 'v': '+'}
+    assert get_highest_member_prefix({}, '') == ''
+    assert get_highest_member_prefix(server_prefixes, '') == ''
+    assert get_highest_member_prefix(server_prefixes, '+') == '+'
+    assert get_highest_member_prefix(server_prefixes, '@') == '@'
+    assert get_highest_member_prefix(server_prefixes, '+@') == '@'
+    assert get_highest_member_prefix(server_prefixes, '@+') == '@'
+    assert get_highest_member_prefix(server_prefixes, '%+') == '%'
+    assert get_highest_member_prefix(server_prefixes, '+%') == '%'
 
 
 def test_parse_chanmodes():

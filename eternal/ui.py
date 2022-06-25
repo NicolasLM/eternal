@@ -102,7 +102,7 @@ class Channel:
                 (urwid.Text(header_str, align='right'), ('pack', None))
             ]
             self._members_pile_widget.extend([
-                (urwid.Text((nick_color(m.user.source.nick), m.prefixes + m.user.source.nick), align='right' if m.user.is_away else 'left'), ('pack', None))
+                (urwid.Text((nick_color(m.user.source.nick), m.highest_prefix + m.user.source.nick), align='right' if m.user.is_away else 'left'), ('pack', None))
                 for m in islice(members, 128)
             ])
             self.members_updated = False
