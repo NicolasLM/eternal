@@ -791,27 +791,16 @@ class IRCClient:
 
         return []
 
-    def should_send_active_typing_update(self, channel_name: str) -> bool:
+    def _should_send_active_typing_update(self, member: Member) -> bool:
         """Tell whether sending an active typing update is warranted."""
         if 'message-tags' not in self.capabilities:
-            return False
-
-        try:
-            channel = self.channels[channel_name]
-        except KeyError:
-            return False
-
-        try:
-            member = channel.members[self.nick]
-        except KeyError:
-            logger.warning('Nick of current user "%s" is not a member of channel "%s"', self.nick, channel_name)
             return False
 
         if not member.is_typing:
             return True
 
         if member.last_typing_update_at is None:
-            logger.warning('Inconsistent state, member "%s" of channel "%s" should have "last_typing_update_at" set', self.nick, channel_name)
+            logger.warning('Inconsistent state, member "%s" should have "last_typing_update_at" set', self.nick)
             return True
 
         if member.last_typing_update_at + timedelta(seconds=3) < get_utc_now():
@@ -819,26 +808,8 @@ class IRCClient:
 
         return False
 
-    def should_send_done_typing_update(self, channel_name: str) -> bool:
-        """Tell whether cancelling a typing indication is warranted."""
-        if 'message-tags' not in self.capabilities:
-            return False
-
-        try:
-            channel = self.channels[channel_name]
-        except KeyError:
-            return False
-
-        try:
-            member = channel.members[self.nick]
-        except KeyError:
-            logger.warning('Nick of current user "%s" is not a member of channel "%s"', self.nick, channel_name)
-            return False
-
-        return member.is_typing
-
-    def mark_sent_active_typing_update(self, channel_name: str):
-        """Register that a typing indication for the current user on a channel was sent."""
+    def notify_typing_active(self, channel_name: str):
+        """Send a notification that the user is typing if necessary."""
         try:
             channel = self.channels[channel_name]
         except KeyError:
@@ -848,13 +819,17 @@ class IRCClient:
             member = channel.members[self.nick]
         except KeyError:
             logger.warning('Nick of current user "%s" is not a member of channel "%s"', self.nick, channel_name)
+            return
+
+        if not self._should_send_active_typing_update(member):
             return
 
         member.is_typing = True
         member.last_typing_update_at = get_utc_now()
+        self.send_to_server(f'@+typing=active TAGMSG {channel_name}')
 
-    def mark_sent_done_typing_update(self, channel_name: str):
-        """Reset typing indication for current user on a channel."""
+    def notify_typing_done(self, channel_name: str):
+        """Send a notification that the user stopped typing if necessary."""
         try:
             channel = self.channels[channel_name]
         except KeyError:
@@ -866,8 +841,15 @@ class IRCClient:
             logger.warning('Nick of current user "%s" is not a member of channel "%s"', self.nick, channel_name)
             return
 
+        if 'message-tags' not in self.capabilities:
+            return
+
+        if not member.is_typing:
+            return
+
         member.is_typing = False
         member.last_typing_update_at = None
+        self.send_to_server(f'@+typing=done TAGMSG {channel_name}')
 
     def sort_members_by_prefix(self, members: Iterable[Member]) -> List[Member]:
         """Sort members of a channel.

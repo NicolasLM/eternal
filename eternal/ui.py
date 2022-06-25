@@ -483,13 +483,9 @@ class CommandEdit(urwid_readline.ReadlineEdit):
 
         command = self.get_edit_text()
         if command.startswith('/') or command == '':
-            if channel.irc.should_send_done_typing_update(channel.name):
-                channel.irc.send_to_server(f'@+typing=done TAGMSG {channel.name}')
-                channel.irc.mark_sent_done_typing_update(channel.name)
+            channel.irc.notify_typing_done(channel.name)
         else:
-            if channel.irc.should_send_active_typing_update(channel.name):
-                channel.irc.send_to_server(f'@+typing=active TAGMSG {channel.name}')
-                channel.irc.mark_sent_active_typing_update(channel.name)
+            channel.irc.notify_typing_active(channel.name)
 
     def _auto_complete(self, text, state):
         channel = self.ui.get_current_channel()
