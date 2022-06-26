@@ -958,14 +958,9 @@ class IRCClient:
                 msg.command == "CAP" and len(msg.params) == 3 and msg.params[1] == "LS"
             )
 
-        sasl_config = self._config.get("sasl")
-        if sasl_config and "sasl" in self.capabilities:
-            next_step = self._handshake_authenticate_step_1
-        else:
-            # No SASL authentication, skip that step
-            next_step = self._handshake_negociate_capabilities
-        self._handshake_steps.append((is_capabilities_received, next_step))
-
+        self._handshake_steps.append(
+            (is_capabilities_received, self._handshake_authenticate_step_1)
+        )
         self.send_to_server("CAP LS 302")
         self.send_to_server(f'NICK {self._config["nick"]}')
         self.send_to_server(
@@ -973,6 +968,11 @@ class IRCClient:
         )
 
     def _handshake_authenticate_step_1(self):
+        sasl_config = self._config.get("sasl")
+        if not sasl_config or not "sasl" in self.capabilities:
+            # No SASL authentication, skip that step
+            return self._handshake_negociate_capabilities()
+
         def is_authenticate_plus_received(msg: Message):
             # Wait for "AUTHENTICATE +" from the server
             return (
