@@ -8,6 +8,7 @@ import urwid
 from .airc import IRCClientProtocol
 from .libirc import IRCClient
 from .ui import UI, palette
+from .urwid_asyncio import AsyncioEventLoop
 
 logger = getLogger(__name__)
 
@@ -39,8 +40,13 @@ def main():
     ui = UI()
 
     urwid_main_loop = urwid.MainLoop(
-        ui.frame, palette, event_loop=urwid.AsyncioEventLoop(loop=loop)
+        ui, palette, event_loop=AsyncioEventLoop(loop=loop)
     )
+
+    def draw_screen_soon():
+        loop.call_soon(urwid_main_loop.draw_screen)
+
+    ui.set_draw_screen_soon(draw_screen_soon)
 
     for config_file_name in sys.argv[1:]:
         with open(config_file_name) as f:

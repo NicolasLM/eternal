@@ -2,12 +2,12 @@ import hashlib
 import re
 from datetime import datetime
 from itertools import islice
-from typing import List, Optional, Tuple, Union
+from typing import Callable, List, Optional, Tuple, Union
 
 import urwid
 import urwid_readline
 
-from . import airc, libirc
+from . import libirc
 
 palette = [
     ("Bold", "default,bold", "default", "bold"),
@@ -154,13 +154,24 @@ class Channel:
         return rv
 
 
-class UI:
+class UI(urwid.Frame):
 
     COLUMN_WIDTH = 20
 
     def __init__(self):
         self._current = 0
         self._channels: List[Channel] = []
+
+        # When set, contains a callable that updates the urwid
+        # screen. It is necessary to call it explicitly each time
+        # widgets are modified as a result of an event external to
+        # urwid. For example changing the active buffer does not
+        # require drawing the screen explicitly because it's done
+        # as a result of a keypress managed by urwid.
+        # However adding a received IRC message to the current buffer
+        # requires calling it because the event is external to urwid.
+        self._draw_screen_soon: Optional[Callable] = None
+
         self.chat_content = urwid.ListBox(urwid.SimpleFocusListWalker([]))
         self.status_line = urwid.Text("")
         self.pile = urwid.Pile([])
@@ -183,9 +194,34 @@ class UI:
             ]
         )
         command_input = CommandEdit(self, ("Bold", "Command "))
-        self.frame = MyFrame(
-            self, body=columns, footer=command_input, focus_part="footer"
-        )
+        super().__init__(body=columns, footer=command_input, focus_part="footer")
+
+    def set_draw_screen_soon(self, draw_screen_soon: Callable):
+        self._draw_screen_soon = draw_screen_soon
+        draw_screen_soon()
+
+    def keypress(self, size, key):
+
+        if key == "ctrl p":
+            self.select_previous()
+            return
+
+        if key == "ctrl n":
+            self.select_next()
+            return
+
+        if key == "ctrl o":
+            self.move_up()
+            return
+
+        if key == "ctrl b":
+            self.move_down()
+            return
+
+        if key in ("page up", "page down", "home", "end", "up", "down"):
+            return self.get_body().keypress(size, key)
+
+        return super().keypress(size, key)
 
     async def add_irc_client(self, irc: libirc.IRCClient):
         channel = Channel(irc.name, irc)
@@ -514,6 +550,9 @@ class UI:
                 )
                 self._update_content()
 
+            if self._draw_screen_soon is not None:
+                self._draw_screen_soon()
+
             irc.inbox.task_done()
 
 
@@ -607,35 +646,6 @@ class CommandEdit(urwid_readline.ReadlineEdit):
             return tmp[state]
         except (IndexError, TypeError):
             return None
-
-
-class MyFrame(urwid.Frame):
-    def __init__(self, ui: UI, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.ui = ui
-
-    def keypress(self, size, key):
-
-        if key == "ctrl p":
-            self.ui.select_previous()
-            return
-
-        if key == "ctrl n":
-            self.ui.select_next()
-            return
-
-        if key == "ctrl o":
-            self.ui.move_up()
-            return
-
-        if key == "ctrl b":
-            self.ui.move_down()
-            return
-
-        if key in ("page up", "page down", "home", "end", "up", "down"):
-            return self.get_body().keypress(size, key)
-
-        return super().keypress(size, key)
 
 
 TOGGLE_FORMATTERS = {
