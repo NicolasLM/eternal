@@ -68,7 +68,7 @@ def nick_color(nick: str) -> str:
     return colors[index]
 
 
-class Channel:
+class Buffer:
 
     NUM_TYPING_LIMIT: int = 6
 
@@ -154,13 +154,17 @@ class Channel:
         return rv
 
 
+class ChannelBuffer(Buffer):
+    pass
+
+
 class UI(urwid.Frame):
 
     COLUMN_WIDTH = 20
 
     def __init__(self):
         self._current = 0
-        self._channels: List[Channel] = []
+        self._buffers: List[Buffer] = []
 
         # When set, contains a callable that updates the urwid
         # screen. It is necessary to call it explicitly each time
@@ -224,31 +228,31 @@ class UI(urwid.Frame):
         return super().keypress(size, key)
 
     async def add_irc_client(self, irc: libirc.IRCClient):
-        channel = Channel(irc.name, irc)
-        channel.is_client_default = True
-        self.add_channel(channel)
+        buffer = Buffer(irc.name, irc)
+        buffer.is_client_default = True
+        self.add_buffer(buffer)
         await self._consume_messages(irc)
 
     def _update_pile(self):
         pile_widgets = list()
-        for index, channel in enumerate(self._channels):
+        for index, buffer in enumerate(self._buffers):
 
-            if index > 0 and channel.is_client_default:
+            if index > 0 and buffer.is_client_default:
                 pile_widgets.append((urwid.Text(""), ("pack", None)))
 
-            if channel.is_client_default:
-                channel.name = channel.irc.name
-                text = channel.name
+            if buffer.is_client_default:
+                buffer.name = buffer.irc.name
+                text = buffer.name
             else:
-                text = f" {channel.name}"
+                text = f" {buffer.name}"
 
             text = fit(text, self.COLUMN_WIDTH - 2)
 
             if index == self._current:
                 widget = urwid.Text(("White", text))
-            elif channel.has_notification:
+            elif buffer.has_notification:
                 widget = urwid.Text(("Yellow", text))
-            elif channel.has_unread:
+            elif buffer.has_unread:
                 widget = urwid.Text(("Dark green", text))
             else:
                 widget = urwid.Text(text)
@@ -259,58 +263,58 @@ class UI(urwid.Frame):
 
     def _render_members(self):
         self.members_pile.contents = (
-            self.get_current_channel().get_members_pile_widgets()
+            self.get_current_buffer().get_members_pile_widgets()
         )
         self._render_status_line()
 
     def _render_status_line(self):
-        markup = self.get_current_channel().get_status_line_content()
+        markup = self.get_current_buffer().get_status_line_content()
         self.status_line.set_text(markup)
 
-    def add_channel(self, channel: Channel):
-        # Find the position after the last channel of the same client
-        insert_at = len(self._channels)
-        for i, c in enumerate(self._channels):
-            if c.irc is channel.irc:
+    def add_buffer(self, buffer: Buffer):
+        # Find the position after the last buffer of the same client
+        insert_at = len(self._buffers)
+        for i, c in enumerate(self._buffers):
+            if c.irc is buffer.irc:
                 insert_at = i + 1
 
         if self._current > insert_at:
             self._current += 1
 
-        self._channels.insert(insert_at, channel)
+        self._buffers.insert(insert_at, buffer)
         self._update_pile()
-        if len(self._channels) == 1:
+        if len(self._buffers) == 1:
             self._update_content()
             self._render_members()
 
-    def remove_channel(self, channel: Channel):
-        i = self._channels.index(channel)
+    def remove_buffer(self, buffer: Buffer):
+        i = self._buffers.index(buffer)
         if self._current >= i:
             self._current -= 1
-        self._channels.pop(i)
+        self._buffers.pop(i)
         self._update_pile()
         self._update_content()
         self._render_members()
 
     def _update_content(self):
-        channel = self._channels[self._current]
-        channel_list_walker = channel.list_walker
-        self.chat_content.body = channel_list_walker
+        buffer = self._buffers[self._current]
+        buffer_list_walker = buffer.list_walker
+        self.chat_content.body = buffer_list_walker
         try:
-            self.chat_content.set_focus(channel_list_walker.positions(True)[0])
+            self.chat_content.set_focus(buffer_list_walker.positions(True)[0])
         except IndexError:
             pass
-        channel.has_unread = False
-        channel.has_notification = False
+        buffer.has_unread = False
+        buffer.has_notification = False
         self._update_pile()
 
     def select_previous(self):
-        """Select previous channel."""
+        """Select previous buffer."""
         if self._current == 0:
             return
 
         try:
-            self._channels[self._current - 1]
+            self._buffers[self._current - 1]
         except IndexError:
             pass
         else:
@@ -320,9 +324,9 @@ class UI(urwid.Frame):
             self._render_members()
 
     def select_next(self):
-        """Select next channel."""
+        """Select next buffer."""
         try:
-            self._channels[self._current + 1]
+            self._buffers[self._current + 1]
         except IndexError:
             pass
         else:
@@ -332,14 +336,14 @@ class UI(urwid.Frame):
             self._render_members()
 
     def move_up(self):
-        """Move a channel up the list."""
+        """Move a buffer up the list."""
         i = self._current
         if i == 0:
             return
 
         try:
-            current_c = self._channels[i]
-            previous_c = self._channels[i - 1]
+            current_c = self._buffers[i]
+            previous_c = self._buffers[i - 1]
         except IndexError:
             return
 
@@ -349,22 +353,22 @@ class UI(urwid.Frame):
         if current_c.is_client_default or previous_c.is_client_default:
             return
 
-        self._channels[i], self._channels[i - 1] = (
-            self._channels[i - 1],
-            self._channels[i],
+        self._buffers[i], self._buffers[i - 1] = (
+            self._buffers[i - 1],
+            self._buffers[i],
         )
         self._current -= 1
         self._update_pile()
 
     def move_down(self):
-        """Move a channel down the list."""
+        """Move a buffer down the list."""
         i = self._current
-        if i == len(self._channels) - 1:
+        if i == len(self._buffers) - 1:
             return
 
         try:
-            current_c = self._channels[i]
-            next_c = self._channels[i + 1]
+            current_c = self._buffers[i]
+            next_c = self._buffers[i + 1]
         except IndexError:
             return
 
@@ -374,33 +378,31 @@ class UI(urwid.Frame):
         if current_c.is_client_default or next_c.is_client_default:
             return
 
-        self._channels[i], self._channels[i + 1] = (
-            self._channels[i + 1],
-            self._channels[i],
+        self._buffers[i], self._buffers[i + 1] = (
+            self._buffers[i + 1],
+            self._buffers[i],
         )
         self._current += 1
         self._update_pile()
 
-    def _get_channel_by_name(
-        self, irc: libirc.IRCClient, name: Optional[str]
-    ) -> Channel:
-        for channel in self._channels:
-            if channel.irc is not irc:
+    def _get_buffer_by_name(self, irc: libirc.IRCClient, name: Optional[str]) -> Buffer:
+        for buffer in self._buffers:
+            if buffer.irc is not irc:
                 continue
 
-            if channel.name == name:
-                return channel
+            if buffer.name == name:
+                return buffer
 
-            if name is None and channel.is_client_default:
-                return channel
+            if name is None and buffer.is_client_default:
+                return buffer
 
-        # Create channel if it doesn't exist
-        channel = Channel(name, irc)
-        self.add_channel(channel)
-        return channel
+        # Create buffer if it doesn't exist
+        buffer = Buffer(name, irc)
+        self.add_buffer(buffer)
+        return buffer
 
-    def get_current_channel(self) -> Channel:
-        return self._channels[self._current]
+    def get_current_buffer(self) -> Buffer:
+        return self._buffers[self._current]
 
     def _channel_member_update(
         self,
@@ -409,8 +411,8 @@ class UI(urwid.Frame):
         irc: libirc.IRCClient,
         texts: list,
         always_show=False,
-    ) -> Channel:
-        channel = self._get_channel_by_name(irc, msg.channel)
+    ) -> ChannelBuffer:
+        channel = self._get_buffer_by_name(irc, msg.channel)
         channel.members_updated = True
         self._render_members()
         if msg.user.is_recently_active or always_show:
@@ -443,7 +445,7 @@ class UI(urwid.Frame):
                     msg, time, irc, [f" left {msg.channel}"]
                 )
                 if msg.channel not in irc.channels:
-                    self.remove_channel(channel)
+                    self.remove_buffer(channel)
 
             elif isinstance(msg, libirc.ChannelKickEvent):
                 self._channel_member_update(
@@ -483,13 +485,13 @@ class UI(urwid.Frame):
 
             elif isinstance(msg, libirc.NewMessageEvent):
                 if msg.channel == "*":
-                    channel = self._get_channel_by_name(irc, None)
+                    buffer = self._get_buffer_by_name(irc, None)
                 else:
-                    channel = self._get_channel_by_name(irc, msg.channel)
+                    buffer = self._get_buffer_by_name(irc, msg.channel)
                 if irc.nick in msg.message:
-                    channel.has_notification = True
-                channel.has_unread = True
-                channel.list_walker.append(
+                    buffer.has_notification = True
+                buffer.has_unread = True
+                buffer.list_walker.append(
                     urwid.Text(
                         [
                             ("Light gray", f"{time} "),
@@ -502,13 +504,13 @@ class UI(urwid.Frame):
                 self._update_content()
 
             elif isinstance(msg, libirc.ChannelTopicEvent):
-                channel = self._get_channel_by_name(irc, msg.channel)
-                channel.list_walker.append(urwid.Text(*convert_formatting(msg.topic)))
+                buffer = self._get_buffer_by_name(irc, msg.channel)
+                buffer.list_walker.append(urwid.Text(*convert_formatting(msg.topic)))
                 self._update_content()
 
             elif isinstance(msg, libirc.ChannelTopicWhoTimeEvent):
-                channel = self._get_channel_by_name(irc, msg.channel)
-                channel.list_walker.append(
+                buffer = self._get_buffer_by_name(irc, msg.channel)
+                buffer.list_walker.append(
                     urwid.Text(
                         [
                             "Set by ",
@@ -520,23 +522,23 @@ class UI(urwid.Frame):
                 self._update_content()
 
             elif isinstance(msg, libirc.ChannelNamesEvent):
-                channel = self._get_channel_by_name(irc, msg.channel)
-                channel.members_updated = True
+                buffer = self._get_buffer_by_name(irc, msg.channel)
+                buffer.members_updated = True
                 self._render_members()
                 self._update_content()
 
             elif isinstance(msg, libirc.ChannelModeEvent):
-                channel = self._get_channel_by_name(irc, msg.channel)
-                channel.members_updated = True
+                buffer = self._get_buffer_by_name(irc, msg.channel)
+                buffer.members_updated = True
                 self._render_members()
 
             elif isinstance(msg, libirc.ChannelTypingEvent):
-                channel = self._get_channel_by_name(irc, msg.channel)
+                buffer = self._get_buffer_by_name(irc, msg.channel)
                 self._render_status_line()
 
             elif isinstance(msg, libirc.NewMessageFromServerEvent):
-                channel = self._get_channel_by_name(irc, None)
-                channel.list_walker.append(
+                buffer = self._get_buffer_by_name(irc, None)
+                buffer.list_walker.append(
                     urwid.Text(
                         [("Light gray", f"{time} "), *convert_formatting(msg.message)]
                     )
@@ -544,8 +546,8 @@ class UI(urwid.Frame):
                 self._update_content()
 
             else:
-                channel = self._get_channel_by_name(irc, None)
-                channel.list_walker.append(
+                buffer = self._get_buffer_by_name(irc, None)
+                buffer.list_walker.append(
                     urwid.Text(msg.command + " " + " ".join(msg.params))
                 )
                 self._update_content()
@@ -568,26 +570,26 @@ class CommandEdit(urwid_readline.ReadlineEdit):
             self._handle_typing_notification()
             return rv
 
-        channel = self.ui.get_current_channel()
+        buffer = self.ui.get_current_buffer()
         command = self.get_edit_text()
         if command == "":
             # Don't send empty messages
             return
 
         elif command == "/close":
-            self.ui.remove_channel(channel)
+            self.ui.remove_buffer(buffer)
         elif command == "/part":
-            channel.irc.send_to_server(f"PART {channel.name}")
+            buffer.irc.send_to_server(f"PART {buffer.name}")
         elif command.startswith("/msg"):
-            irc = channel.irc
-            _, channel_name, content = command.split(" ", maxsplit=2)
-            irc.send_to_server(f"PRIVMSG {channel_name} :{content}")
+            irc = buffer.irc
+            _, target, content = command.split(" ", maxsplit=2)
+            irc.send_to_server(f"PRIVMSG {target} :{content}")
 
             if "echo-message" not in irc.capabilities:
-                channel = self.ui._get_channel_by_name(irc, channel_name)
+                buffer = self.ui._get_buffer_by_name(irc, target)
                 time = get_local_time(libirc.get_utc_now())
                 source = irc.nick
-                channel.list_walker.append(
+                buffer.list_walker.append(
                     urwid.Text(
                         [
                             ("Light gray", f"{time} "),
@@ -599,14 +601,14 @@ class CommandEdit(urwid_readline.ReadlineEdit):
                 self.ui._update_content()
 
         elif command.startswith("/"):
-            channel.irc.send_to_server(command[1:])
+            buffer.irc.send_to_server(command[1:])
         else:
-            channel.irc.send_to_server(f"PRIVMSG {channel.name} :{command}")
+            buffer.irc.send_to_server(f"PRIVMSG {buffer.name} :{command}")
 
-            if "echo-message" not in channel.irc.capabilities:
+            if "echo-message" not in buffer.irc.capabilities:
                 time = get_local_time(libirc.get_utc_now())
-                source = channel.irc.nick
-                channel.list_walker.append(
+                source = buffer.irc.nick
+                buffer.list_walker.append(
                     urwid.Text(
                         [
                             ("Light gray", f"{time} "),
@@ -621,20 +623,20 @@ class CommandEdit(urwid_readline.ReadlineEdit):
 
     def _handle_typing_notification(self):
         try:
-            channel = self.ui.get_current_channel()
+            buffer = self.ui.get_current_buffer()
         except IndexError:
             return
 
         command = self.get_edit_text()
         if command.startswith("/") or command == "":
-            channel.irc.notify_typing_done(channel.name)
+            buffer.irc.notify_typing_done(buffer.name)
         else:
-            channel.irc.notify_typing_active(channel.name)
+            buffer.irc.notify_typing_active(buffer.name)
 
     def _auto_complete(self, text, state):
-        channel = self.ui.get_current_channel()
+        buffer = self.ui.get_current_buffer()
         try:
-            candidates = channel.irc.channels[channel.name].members.keys()
+            candidates = buffer.irc.channels[buffer.name].members.keys()
         except KeyError:
             candidates = list()
         tmp = (
