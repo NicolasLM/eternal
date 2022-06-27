@@ -59,6 +59,7 @@ class User:
     source: Source = field(default_factory=Source)
     modes: str = ""
     is_away: bool = False
+    is_bot: bool = False
     last_message_at: Optional[datetime] = None
 
     @property
@@ -773,16 +774,28 @@ class IRCClient:
         """RPL_WHOREPLY response after a WHO, containing information about a user."""
         channel_name = msg.params[1]
         nick = msg.params[5]
-        is_away = msg.params[6] == "G"
+        is_away = "G" in msg.params[6]
+
+        # When the server has "ISUPPORT BOT=b", users who have "mode +b"
+        # will have an extra "b" in the field that supposed to tell if they
+        # are Here or Gone.
+        # For example "Gb" is a gone bot.
+        try:
+            bot_character = self.supported["BOT"]
+        except KeyError:
+            is_bot = False
+        else:
+            is_bot = bot_character in msg.params[6]
 
         # Only process the reply to WHO when it is about a known channel and
         # away status is tracked.
         # This is because WHO can be used interactively to query other information
         # than the away status used here.
         if "away-notify" in self.capabilities and channel_name not in self.channels:
-            return msg
+            return [msg]
 
         self.users[nick].is_away = is_away
+        self.users[nick].is_bot = is_bot
         return []
 
     def _process_315_message(self, msg: Message):
@@ -792,7 +805,7 @@ class IRCClient:
         # a channel.
         channel_name = msg.params[1]
         if "away-notify" in self.capabilities and channel_name not in self.channels:
-            return msg
+            return [msg]
 
         return [ChannelNamesEvent(channel=channel_name, nicks=[], **msg.__dict__)]
 
