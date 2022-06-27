@@ -79,9 +79,22 @@ class Buffer:
         self.has_notification = False
         self.is_client_default = False
 
+        # Timezone naive datetime in local time
+        # of the moment the last line was appended.
+        self._last_line_at: Optional[datetime] = None
+
     def append(self, text):
+        is_scrolled_fully = self.is_scrolled_fully()
+
+        # Insert a new line with the current date if the day changed.
+        now = datetime.now()
+        if self._last_line_at is not None:
+            if now.date() != self._last_line_at.date():
+                self._main_content.body.append(urwid.Text(now.strftime("%Y-%m-%d")))
+        self._last_line_at = now
+
         self._main_content.body.append(text)
-        if self.is_scrolled_fully():
+        if is_scrolled_fully:
             try:
                 self._main_content.set_focus(
                     self._main_content.body.positions(reverse=True)[0]
@@ -92,7 +105,7 @@ class Buffer:
     def is_scrolled_fully(self) -> bool:
         try:
             return (
-                self._main_content.focus_position + 1
+                self._main_content.focus_position
                 == self._main_content.body.positions(reverse=True)[0]
             )
         except IndexError:
