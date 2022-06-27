@@ -520,7 +520,9 @@ class UI(urwid.Frame):
             elif isinstance(msg, libirc.BackFromAwayEvent):
                 self._channel_member_update(msg, time, irc, [f" is back"])
 
-            elif isinstance(msg, libirc.NewMessageEvent):
+            elif isinstance(
+                msg, (libirc.NewMessageEvent, libirc.NewActionMessageEvent)
+            ):
                 if msg.channel == "*":
                     buffer = self._get_buffer_by_name(irc, None)
                 else:
@@ -528,8 +530,16 @@ class UI(urwid.Frame):
                 if irc.nick in msg.message:
                     buffer.has_notification = True
                 buffer.has_unread = True
-                buffer.append(
-                    urwid.Text(
+                if isinstance(msg, libirc.NewActionMessageEvent):
+                    line = urwid.Text(
+                        [
+                            ("Light gray", f"{time} "),
+                            (nick_color(str(msg.source)), str(msg.source)),
+                            ("Bold", f" {msg.message} "),
+                        ]
+                    )
+                else:
+                    line = urwid.Text(
                         [
                             ("Light gray", f"{time} "),
                             (nick_color(str(msg.source)), str(msg.source)),
@@ -537,7 +547,7 @@ class UI(urwid.Frame):
                             *convert_formatting(msg.message),
                         ]
                     )
-                )
+                buffer.append(line)
                 self._update_content()
 
             elif isinstance(msg, libirc.ChannelTopicEvent):
@@ -615,7 +625,7 @@ class CommandEdit(urwid_readline.ReadlineEdit):
             self.ui.remove_buffer(buffer)
         elif command == "/part":
             buffer.irc.send_to_server(f"PART {buffer.name}")
-        elif command.startswith("/msg"):
+        elif command.startswith("/msg "):
             irc = buffer.irc
             _, target, content = command.split(" ", maxsplit=2)
             irc.send_to_server(f"PRIVMSG {target} :{content}")
@@ -630,6 +640,26 @@ class CommandEdit(urwid_readline.ReadlineEdit):
                             ("Light gray", f"{time} "),
                             (nick_color(str(source)), str(source)),
                             f": {content}",
+                        ]
+                    )
+                )
+                self.ui._update_content()
+
+        elif command.startswith("/me "):
+            _, message = command.split(" ", maxsplit=1)
+            buffer.irc.send_to_server(
+                f"PRIVMSG {buffer.name} :\x01ACTION {message}\x01"
+            )
+
+            if "echo-message" not in buffer.irc.capabilities:
+                time = get_local_time(libirc.get_utc_now())
+                source = buffer.irc.nick
+                buffer.append(
+                    urwid.Text(
+                        [
+                            ("Light gray", f"{time} "),
+                            (nick_color(str(source)), str(source)),
+                            ("Bold", f" {message} "),
                         ]
                     )
                 )

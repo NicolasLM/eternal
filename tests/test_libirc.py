@@ -8,6 +8,7 @@ from eternal.libirc import (
     get_sasl_plain_payload,
     parse_capabilities_ls,
     parse_chanmodes,
+    parse_ctcp_action,
     parse_member_prefixes,
     parse_message,
     parse_message_params,
@@ -171,3 +172,13 @@ def test_parse_chanmodes():
         "n": "D",
     }
     assert parse_chanmodes(",,,imn") == {"i": "D", "m": "D", "n": "D"}
+
+
+def test_parse_ctcp_action():
+    assert parse_ctcp_action("") is None
+    assert parse_ctcp_action("foo") is None
+    assert parse_ctcp_action("ACTIONgoes to sleep") is None
+    assert parse_ctcp_action("\x01ACTIONgoes to sleep\x01") == "goes to sleep"
+    assert parse_ctcp_action("\x01ACTION goes to sleep\x01") == "goes to sleep"
+    assert parse_ctcp_action("\x01ACTION\x01") == ""
+    assert parse_ctcp_action("\x01ACTION \x01") == ""

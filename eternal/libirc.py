@@ -1,6 +1,7 @@
 import base64
 import enum
 import logging
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -189,6 +190,14 @@ class NewMessageEvent(Message):
 
 
 @dataclass
+class NewActionMessageEvent(Message):
+    """New /me message from someone."""
+
+    channel: str = ""
+    message: str = ""
+
+
+@dataclass
 class NewMessageFromServerEvent(Message):
     """New message from the server."""
 
@@ -355,11 +364,19 @@ class IRCClient:
                 destination = msg.source.nick or msg.source.host
 
             self.users[msg.source.nick].last_message_at = get_utc_now()
-            rv = [
-                NewMessageEvent(
-                    channel=destination, message=msg.params[1], **msg.__dict__
-                )
-            ]
+            ctcp_action = parse_ctcp_action(message=msg.params[1])
+            if ctcp_action is not None:
+                rv = [
+                    NewActionMessageEvent(
+                        channel=destination, message=ctcp_action, **msg.__dict__
+                    )
+                ]
+            else:
+                rv = [
+                    NewMessageEvent(
+                        channel=destination, message=msg.params[1], **msg.__dict__
+                    )
+                ]
 
             # A client sending a message should reset its typing status
             try:
@@ -1197,3 +1214,14 @@ def parse_chanmodes(chanmodes: str) -> Dict[str, str]:
         else:
             rv[mode] = mode_types[mode_type_i]
     return rv
+
+
+CTCP_ACTION_REGEX = re.compile("\x01ACTION ?(.*)\x01")
+
+
+def parse_ctcp_action(message: str) -> Optional[str]:
+    match = CTCP_ACTION_REGEX.match(message)
+    if match is None:
+        return None
+
+    return match.groups()[0]
